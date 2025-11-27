@@ -32,11 +32,11 @@ A policy $r^T$ is *Tarquinian* if it satisfies
 
 $$
 \begin{equation}
-r^T_n=\argmax_{r_n} E(\pi_n|V,r) \forall n\in\{0,...,N\}
+r^T_n=\text{arg max}_{r_n} E(\pi_n|V,r) \forall n\in\{0,...,N\}
 \end{equation}
 $$
 
-**Proposition 1 (end-state Tarquinian policy).** *For any $V,c,t$, we have $r_0^T(v_0)=\mathbf{1}_{v_0>t}$.*
+**Proposition 1 (end-state Tarquinian policy).** For any $V,c,t$, we have $r_0^T(v_0)=\mathbf{1}_{v_0>t}$.
 
 **Proof.**
 
@@ -70,18 +70,18 @@ $$
 $$
 \begin{equation}
 \begin{aligned}
-r_n^T &= \argmax_{r_n} E(\pi_n|V,r) \\
-&= \argmax_{r_n} E(r_n(v_n)(\pi_{n-1}(V,r)-c_{n-1})|V,r) \\
-&= \argmax_{r_n} r_n(v_n) E(\pi_{n-1}(V,r)-c_{n-1}|V,r) \\
-&= \argmax_{r_n} r_n(v_n) (E(\pi_{n-1}(V,r)|V,r)-c_{n-1}) \\
-&= \argmax_{r_n} r_n(v_n) p_n(v_n)
+r_n^T &= \text{arg max}_{r_n} E(\pi_n|V,r) \\
+&= \text{arg max}_{r_n} E(r_n(v_n)(\pi_{n-1}(V,r)-c_{n-1})|V,r) \\
+&= \text{arg max}_{r_n} r_n(v_n) E(\pi_{n-1}(V,r)-c_{n-1}|V,r) \\
+&= \text{arg max}_{r_n} r_n(v_n) (E(\pi_{n-1}(V,r)|V,r)-c_{n-1}) \\
+&= \text{arg max}_{r_n} r_n(v_n) p_n(v_n)
 \end{aligned}
 \end{equation}
 $$
 
 Which is satisfied by $r_n^T=\mathbf{1}_{p_n^T(v_n)>0}$ by the same argument as was applied in (1) to $r_0^T$.
 
-**Proposition 3 (value of proceeding increasing in value signal).** *$p_n^T$ is weakly increasing in $v_n$ for all $n$.*
+**Proposition 3 (value of proceeding increasing in value signal).** $p_n^T$ is weakly increasing in $v_n$ for all $n$.
 
 **Proof.** (induction) This is evident for $n=0$; assume $p_{n-1}^T$ is weakly increasing in $v_{n-1}$.
 
