@@ -133,7 +133,7 @@ $$
 E(h(x)|Y=y) = \int h(x)f_{X|Y}(x|y)dx
 $$
 
-Thus ($h(v_{n-1}) \coloneqq r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})$),
+Thus ( $h(v_{n-1}) \coloneqq r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})$ ),
 
 $$
 p_n = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}
@@ -209,9 +209,9 @@ That is, proceeding from $n$ to $n-1$ yields the known value of $v_0$, less all 
 **Proof.** 
 Suppose $a \in S_n$ and take arbitrary $c \gt a$. Note that since $p_n^T$ is nondecreasing, $c \in S_n$. But for arbitrary $b \in (a,c)$, we have $b \gt a \implies b \in S_n$ for the same reason; thus, $S_n$ is an interval. By the same reasoning, $a \in S_n \implies 2a \in S_n$, thus $S_n$ is right-unbounded. □
 
-**Proposition 6 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** *If $p_n^T$ is strictly increasing and has a zero then $S_n=[{p_n^T}^{-1}(0), \infty)$.*
+**Proposition 6 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=[{p_n^T}^{-1}(0), \infty)$.
 
-**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing hence bijective, $v^*:={p_n^T}^{-1}(0)$ exists and is unique. Since ${p_n^T}(v^*)=0 \geq 0$, $v^* \in S_n$, and from strict monontonicity for $v' \lt v$, we have $p_n^T(v') \lt 0 \implies v' \notin S_n$, so $v^* = \inf S = \min S$. Since $v^* \in S_n$, $S_n$ is nonempty and (by (4)) right-unbounded, hence $S_n=[{p_n^T}^{-1}(0), \infty)$. □
+**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing hence bijective, $v^* \coloneqq {p_n^T}^{-1}(0)$ exists and is unique. Since ${p_n^T}(v^\*)=0 \geq 0$, $v^\* \in S_n$, and from strict monontonicity for $v' \lt v$, we have $p_n^T(v') \lt 0 \implies v' \notin S_n$, so $v^* = \inf S = \min S$. Since $v^* \in S_n$, $S_n$ is nonempty and (by (4)) right-unbounded, hence $S_n=[{p_n^T}^{-1}(0), \infty)$. □
 
 **todo: can we generalize this to broader p (nondecreasing with a unique zero)**
 
