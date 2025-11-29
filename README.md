@@ -9,7 +9,7 @@ Consider a game between two players, a *vendor* and a *buyer*. The vendor is equ
 1. **(sufficiency)** $V$ is ordered so that each prophecy $V_n$ is sufficient for the next prophecy $V_{n-1}$ with respect to all already-acquired prophecies $V_N,...,V_n$; that is, $E(V_{n-1}|V_n)=E(V_{n-1}|V_N,...,V_n)$. This may appear strong, but in practice merely requires the buyer to compute and set $E(V_{n-1}|V_N,...,V_n) \rightarrow V_n$.
 2. **(stochastic monotonicity)** $E(V_{n-1}|V_n=v_n)$ is weakly increasing. Similar to sufficiency, this is a practical constraint rather than a theoretical one (set $E(V_{n-1}|V_n) \rightarrow V_n$). This is stronger than $E(V_0|V_n=v_n)$ weakly increasing; the latter allows nonincreasing $E(V_{n-1}|V_n=v_n)$ if $\exists n': V_{n'} \perp V_0, 0 \lt n' \leq n-1$.
 
-A sequence of prophecies $V=\{V_i\}_{i \isin \delta}$ is called a *book* with *index* $\delta$. A book with a singleton index is called *empty*. If for books $B_a,B_b$, $\delta_a \subset \delta_b$, $B_a$ is called an *abridgement* of $B_b$; a nonempty book with index $\delta$ has $2^{|\delta|-1}-1$ abridgements.
+A sequence of prophecies $V=\{V_i\}_{i \in \delta}$ is called a *book* with *index* $\delta$. A book with a singleton index is called *empty*. If for books $B_a,B_b$, $\delta_a \subset \delta_b$, $B_a$ is called an *abridgement* of $B_b$; a nonempty book with index $\delta$ has $2^{|\delta|-1}-1$ abridgements.
 
 ### Gameplay
 At the outset the vendor, eager for business, provides the buyer with a large sample draw from $V$, allowing both to estimate the joint density $f(v_N,...,v_0)$ (which exists as all $V_n$ are measurable over $\mathbb{P}$).
