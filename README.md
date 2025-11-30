@@ -9,11 +9,12 @@ Consider a game between two players, a *vendor* and a *buyer*. The vendor is equ
 1. **(sufficiency)** $V$ is ordered so that each prophecy $V_n$ is sufficient for the next prophecy $V_{n-1}$ with respect to all already-acquired prophecies $V_N,...,V_n$; that is, $E(V_{n-1}|V_n)=E(V_{n-1}|V_N,...,V_n)$. This may appear strong, but in practice merely requires the buyer to compute and set $E(V_{n-1}|V_N,...,V_n) \rightarrow V_n$.
 2. **(stochastic monotonicity)** $E(V_{n-1}|V_n=v_n)$ is weakly increasing. Similar to sufficiency, this is a practical constraint rather than a theoretical one (set $E(V_{n-1}|V_n) \rightarrow V_n$). This is stronger than $E(V_0|V_n=v_n)$ weakly increasing; the latter allows nonincreasing $E(V_{n-1}|V_n=v_n)$ if $\exists n': V_{n'} \perp V_0, 0 \lt n' \leq n-1$.
 
-A sequence of prophecies $V=\{V_i\}_{i \isin \delta}$ is called a *book* with *index* $\delta$. A book with a singleton index is called *empty*. If for books $B_a,B_b$, $\delta_a \subset \delta_b$, $B_a$ is called an *abridgement* of $B_b$; a nonempty book with index $\delta$ has $2^{|\delta|-1}-1$ abridgements.
+A sequence of prophecies $V=\{V_i\}_{i \in \delta}$ is called a *book* with *index* $\delta$. A book with a singleton index is called *empty*. If for books $B_a,B_b$, $\delta_a \subset \delta_b$, $B_a$ is called an *abridgement* of $B_b$; a nonempty book with index $\delta$ has $2^{|\delta|-1}-1$ abridgements.
 
 ### Gameplay
 At the outset the vendor, eager for business, provides the buyer with a large sample draw from $V$, allowing both to estimate the joint density $f(v_N,...,v_0)$ (which exists as all $V_n$ are measurable over $\mathbb{P}$).
 After observing $f$ the vendor chooses a cost vector $c \in \mathbb{R}^N$ to price $V$ (for now we take $c$ as given and disregard optimal pricing) and the buyer chooses a policy vector $r=\{r_N,...,r_0\}: \mathbf{R}^N \mapsto \{0,1\}^N$, where $r_n(v_n)$ determines whether to purchase prophecy $v_{n-1}$ given the observed value of $v_n$. Finally, a single sample $v \in \mathbb{R}^N$ is drawn from $V$, and the buyer's payoff $\pi_N$ is determined by:
+
 $$
 \begin{equation}
   \pi_n(v,r) =
@@ -23,19 +24,22 @@ $$
     \end{cases}
 \end{equation}
 $$
+
 where $c_{-1}=0$ and tightness parameter $t$ represents the buyer's overhead (**future work: use budget constraint directly rather than $t$**). That is, at each step $n$, if the buyer decides to proceed ($r_n(v_n)=1$) they incur cost $c_{n-1}$ and receive the outcome of step $n-1$; otherwise, they exit the game and pay any cost already incurred. If the buyer arrives at step $n=0$ they receive the value $v_0$ of the final prophecy, less overhead $t$.
 
 ### Tarquinian Policy
-A policy $r^T$ is *Tarquinian* if it satisfies 
+A policy $r^T$ is *Tarquinian* if it satisfies
+
 $$
 \begin{equation}
-r^T_n=\argmax_{r_n} E(\pi_n|V,r) \forall n\in\{0,...,N\}
+r^T_n=\text{arg max}_{r_n} E(\pi_n|V,r) \forall n\in\{0,...,N\}
 \end{equation}
 $$
 
-**Proposition 1 (end-state Tarquinian policy).** *For any $V,c,t$, we have $r_0^T(v_0)=\mathbf{1}_{v_0>t}$.*
+**Proposition 1 (end-state Tarquinian policy).** For any $V,c,t$, we have $r_0^T(v_0)=\mathbf{1}_{v_0>t}$.
 
 **Proof.**
+
 $$
 \begin{aligned}
 E(\pi_0|V,r)&=E(r_0(v_0)(v_0-t)-c_{-1}|V_0=v_0) \\
@@ -46,11 +50,13 @@ v_0-t & r_0(v_0)=1 \\
 \end{cases}
 \end{aligned}
 $$
+
 If $v_0>t$, $v_0-t>0$, so $r_0(v_0)=1$ maximizes $E(\pi_0|V,r)$, and the reverse shows $r_0(v_0)=0$ maximizes $E(\pi_0|V,r)$ when $v_0<t$. □
 
 That is, once all costs are sunk and the true value $v_0$ is revealed, the Tarquinian buyer acquires $v_0$ (at cost $c_{-1}=0$) iff its value after overhead $t$ is positive. 
 
 For convenience, define the expected value of "proceeding" to $n-1$, that is, of acquiring $v_{n-1}$ after costs:
+
 $$
 \begin{equation}
 p_n(v_n,r) \coloneqq E(\pi_{n-1}|V_n=v_n,r) - c_{n-1}, 0 \leq n \leq N
@@ -60,41 +66,48 @@ $$
 **Proposition 2 (Tarquinian policy is proceeding on positive value).** For $n=0,...,N$, we have $r_n^T=\mathbf{1}_{p_n^T(v_n)>0}$.
 
 **Proof.** First, write Tarquinian policy at step $n$ as:
+
 $$
 \begin{equation}
 \begin{aligned}
-r_n^T &= \argmax_{r_n} E(\pi_n|V,r) \\
-&= \argmax_{r_n} E(r_n(v_n)(\pi_{n-1}(V,r)-c_{n-1})|V,r) \\
-&= \argmax_{r_n} r_n(v_n) E(\pi_{n-1}(V,r)-c_{n-1}|V,r) \\
-&= \argmax_{r_n} r_n(v_n) (E(\pi_{n-1}(V,r)|V,r)-c_{n-1}) \\
-&= \argmax_{r_n} r_n(v_n) p_n(v_n)
+r_n^T &= \text{arg max}_{r_n} E(\pi_n|V,r) \\
+&= \text{arg max}_{r_n} E(r_n(v_n)(\pi_{n-1}(V,r)-c_{n-1})|V,r) \\
+&= \text{arg max}_{r_n} r_n(v_n) E(\pi_{n-1}(V,r)-c_{n-1}|V,r) \\
+&= \text{arg max}_{r_n} r_n(v_n) (E(\pi_{n-1}(V,r)|V,r)-c_{n-1}) \\
+&= \text{arg max}_{r_n} r_n(v_n) p_n(v_n)
 \end{aligned}
 \end{equation}
 $$
 
 Which is satisfied by $r_n^T=\mathbf{1}_{p_n^T(v_n)>0}$ by the same argument as was applied in (1) to $r_0^T$.
 
-**Proposition 3 (value of proceeding increasing in value signal).** *$p_n^T$ is weakly increasing in $v_n$ for all $n$.*
+**Proposition 3 (value of proceeding increasing in value signal).** $p_n^T$ is weakly increasing in $v_n$ for all $n$.
 
 **Proof.** (induction) This is evident for $n=0$; assume $p_{n-1}^T$ is weakly increasing in $v_{n-1}$.
 
 <!-- By definition $p_{n-1}^T(v_{n-1}) \geq 0 \forall v_{n-1} \in S_{n-1}$.  -->
-Since $p_{n-1}^T$ is increasing by hypothesis, 
+Since $p_{n-1}^T$ is increasing by hypothesis,
+
 $$
 \exists x \in \mathbb{R}: \{p_{n-1}^T(v_{n-1})>0\}=[x,\infty)
 $$
-Thus $\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})$ is also increasing, and so is the product 
+
+Thus $\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})$ is also increasing, and so is the product
+
 $$
 g(V_{n-1})=p_{n-1}^T(V_{n-1})\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})
 $$
 
-In general, for $g$ increasing, $Y$ stochastically increasing in $X$, $E(g(Y)|X=x)$ is increasing. Therefore 
+In general, for $g$ increasing, $Y$ stochastically increasing in $X$, $E(g(Y)|X=x)$ is increasing. Therefore
+
 $$
 p_n^T(v_n)=E(p_{n-1}^T(V_{n-1})\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})|V_n=v_n)
 $$
+
 is non-decreasing. □
 
 **Proposition 4 (value of proceeding, integral form).** If $f_{n-1|n}$ is the density of $V_{n-1}|V_n$ then
+
 $$
 \begin{equation}
 p_n(v_n,r) = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}, n \gt 0
@@ -102,6 +115,7 @@ p_n(v_n,r) = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|n}(v_{n-1}
 $$
 
 **Proof.** First, write $p_n$ in terms of $p_{n-1}$:
+
 $$
 \begin{aligned}
 p_n(v_n,r) &= E(\pi_{n-1}|V_n,r)-c_{n-1} \\
@@ -114,17 +128,21 @@ p_n(v_n,r) &= E(\pi_{n-1}|V_n,r)-c_{n-1} \\
 $$
 
 By the conditional form of the "law of the unconcious statistician", for measurable $h$ we have
+
 $$
 E(h(x)|Y=y) = \int h(x)f_{X|Y}(x|y)dx
 $$
 
-Thus ($h(v_{n-1}) \coloneqq r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})$),
+Thus ( $h(v_{n-1}) \coloneqq r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})$ ),
+
 $$
 p_n = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}
-$$ 
+$$
+
 □
 
 Now we can write the expected value of acquiring $V_{n-1}$ under Tarquinian policy as
+
 $$
 \begin{equation}
 p_n^T(v_n) = \begin{cases}
@@ -133,13 +151,17 @@ v_0-t & n = 0
 \end{cases}
 \end{equation}
 $$
+
 For instance, $p_1^T(v_1)=\int_t^\infty(v_0-t)f_{0|1}(v_0|v_1)dv_0-c_0$.
 
 **Remark (independence).** If for some $n$ $V_{n+1} \perp V_n$, stochastic monotonicity gives $V_{n'} \perp V_n, f_{n|{n'}}(v_n|v_{n'})=f_n(v_n) \forall n' \gt n$. $p_{n+1}^T(v_{n+1})$ is constant
+
 $$
 p_{n+1}^T(v_{n+1}) = p_{n+1}^T = \int_{S_n} p_n^T(v_n)f_n(v_n)-c_n
 $$
+
 So
+
 $$
 S_{n+1}=\begin{cases}
 \mathbb{R} & p_{n+1}^T \geq 0 \\
@@ -148,6 +170,7 @@ S_{n+1}=\begin{cases}
 $$
 
 And
+
 $$
 \begin{equation}
 p_{n+2}^T = \begin{cases}
@@ -158,6 +181,7 @@ p_{n+1}^T-c_{n+1} & p_{n+1}^T \geq 0 \\
 $$
 
 That is, proceeding from $n+2$ to $n+1$ with certainty yields the same payoff as proceeding from $n+1$ to $n$, less the cost of $n+1$. In fact, for $m \gt 1$:
+
 $$
 p_{n+m}^T(v_{n+m}) = \begin{cases}
 p_{n+1}^T-\sum_{i=n+2}^{n+m-1} c_i & p_{n+1}^T \geq \sum_{i=n+2}^{n+m-2} c_i \\
@@ -166,6 +190,7 @@ p_{n+1}^T-\sum_{i=n+2}^{n+m-1} c_i & p_{n+1}^T \geq \sum_{i=n+2}^{n+m-2} c_i \\
 $$
 
 **Remark (crystal ball prophecy).** If for some $n \gt 0$ $V_n=V_{n-1}=...=V_0$ we have
+
 $$
 \begin{equation}
 p_n^T(v_n) = \begin{cases}
@@ -174,6 +199,7 @@ v_n-t-\sum_{i=0}^{n-1}c_i & v_n \geq t+\sum_{i=0}^{n-1}c_i \\
 \end{cases}
 \end{equation}
 $$
+
 That is, proceeding from $n$ to $n-1$ yields the known value of $v_0$, less all downstream and overhead costs.
 
 **todo: generalize to complete information i.e. $v_0=g_n(v_n)$**
@@ -183,21 +209,24 @@ That is, proceeding from $n$ to $n-1$ yields the known value of $v_0$, less all 
 **Proof.** 
 Suppose $a \in S_n$ and take arbitrary $c \gt a$. Note that since $p_n^T$ is nondecreasing, $c \in S_n$. But for arbitrary $b \in (a,c)$, we have $b \gt a \implies b \in S_n$ for the same reason; thus, $S_n$ is an interval. By the same reasoning, $a \in S_n \implies 2a \in S_n$, thus $S_n$ is right-unbounded. □
 
-**Proposition 6 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** *If $p_n^T$ is strictly increasing and has a zero then $S_n=[{p_n^T}^{-1}(0), \infty)$.*
+**Proposition 6 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=[{p_n^T}^{-1}(0), \infty)$.
 
-**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing hence bijective, $v^*:={p_n^T}^{-1}(0)$ exists and is unique. Since ${p_n^T}(v^*)=0 \geq 0$, $v^* \in S_n$, and from strict monontonicity for $v' \lt v$, we have $p_n^T(v') \lt 0 \implies v' \notin S_n$, so $v^* = \inf S = \min S$. Since $v^* \in S_n$, $S_n$ is nonempty and (by (4)) right-unbounded, hence $S_n=[{p_n^T}^{-1}(0), \infty)$. □
+**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing hence bijective, $v^* \coloneqq {p_n^T}^{-1}(0)$ exists and is unique. Since ${p_n^T}(v^\*)=0 \geq 0$, $v^\* \in S_n$, and from strict monontonicity for $v' \lt v$, we have $p_n^T(v') \lt 0 \implies v' \notin S_n$, so $v^* = \inf S = \min S$. Since $v^* \in S_n$, $S_n$ is nonempty and (by (4)) right-unbounded, hence $S_n=[{p_n^T}^{-1}(0), \infty)$. □
 
 **todo: can we generalize this to broader p (nondecreasing with a unique zero)**
 
-**Remark (constrained VOI).** Given the ordering of $V$, a policy $r$, and fixing costs $c_{n-2},...,c_0$, the *value of information* $V_{n-1}$ is the expected payoff of the state in which the buyer has purchased that prophecy: 
+**Remark (constrained VOI).** Given the ordering of $V$, a policy $r$, and fixing costs $c_{n-2},...,c_0$, the *value of information* $V_{n-1}$ is the expected payoff of the state in which the buyer has purchased that prophecy:
+
 $$
 \begin{equation}
 E(\pi_{n-1}|V_n=v_n) = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}, n \gt 0
 \end{equation}
 $$
+
 However, in general the VOI is simply the difference between the values of the purchased state and the next best alternative. For fixed $V$, the sole alternative is to exit, but if the buyer is allowed to skip $V_{n-1}$, there could be a better alternative, lowering the value of this prophecy. We will discuss this in more detail in a future section.
 
 **Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then **(need to explain $v^*$)**:
+
 $$
 \begin{aligned}
 p_n^T(v_n) &= \frac{1}{\sigma_{n-1|n}}\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})\phi\left(\frac{v_{n-1}-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}\right) dv_{n-1} - c_{n-1} \\
@@ -218,6 +247,7 @@ Note that $
 -\frac{30}{91} & \frac{113}{91} & -\tfrac{2}{7}\\[6pt]
 0 & -\tfrac{2}{7} & \tfrac{4}{7}
 \end{pmatrix}$, so $V_2\perp V_0\mid V_1$. We have (confirm increasing)
+
 $$
 \begin{aligned}
 p_1^T(v_1) &= \int_{\frac{t-\mu_{0|1}(v_1)}{\sigma_{0|1}}}^\infty (\mu_{0|1}(v_1)-t+z\sigma_{0|1})\phi(z)dz-c_0 \\
@@ -226,6 +256,7 @@ p_1^T(v_1) &= \int_{\frac{t-\mu_{0|1}(v_1)}{\sigma_{0|1}}}^\infty (\mu_{0|1}(v_1
 &= (0.5v_1-1.45)\Phi\left(\frac{0.5v_1-1.45}{\sqrt{1.75}}\right) + \sqrt{1.75} \phi\left(\frac{0.5v_1-1.45}{\sqrt{1.75}}\right) - 0.1 \\
 \end{aligned}
 $$
+
 and ${p_1^T}^{-1}(0) \approx 0.1204$, which threshold we can empirically confirm maximizes $E(\pi_1|v_1, r)$:
 ```
 import numpy as np
