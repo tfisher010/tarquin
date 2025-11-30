@@ -234,19 +234,40 @@ p_n^T(v_n) &= \frac{1}{\sigma_{n-1|n}}\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})
 \end{aligned}
 $$
 
-**Example.** $V = \begin{pmatrix}V_2\\V_1\\V_0\end{pmatrix} \sim \mathcal{N} \left(\begin{pmatrix}1\\0.5\\-0.2\end{pmatrix},\begin{pmatrix}
-1 & 0.3 & 0.15\\[4pt]
-0.3 & 1 & 0.5\\[4pt]
-0.15 & 0.5 & 2
-\end{pmatrix}\right), c=\begin{pmatrix}0\\0.05\\0.1\end{pmatrix}, t=1$
+**Example.** 
 
-Note that $
+$$
+V = \begin{pmatrix}
+V_2 \\ 
+V_1 \\ 
+V_0 
+\end{pmatrix} \sim \mathcal{N} \left(\begin{pmatrix}
+1 \\
+0.5 \\
+-0.2
+\end{pmatrix},\begin{pmatrix}
+1 & 0.3 & 0.15 \\
+0.3 & 1 & 0.5 \\
+0.15 & 0.5 & 2
+\end{pmatrix}\right), c=\begin{pmatrix}
+0 \\
+0.05 \\
+0.1
+\end{pmatrix}, t=1
+$$
+
+Note that 
+
+$$
 \Sigma^{-1}=
 \begin{pmatrix}
-\frac{100}{91} & -\frac{30}{91} & 0\\[6pt]
--\frac{30}{91} & \frac{113}{91} & -\tfrac{2}{7}\\[6pt]
+\frac{100}{91} & -\frac{30}{91} & 0\\
+-\frac{30}{91} & \frac{113}{91} & -\tfrac{2}{7}\\
 0 & -\tfrac{2}{7} & \tfrac{4}{7}
-\end{pmatrix}$, so $V_2\perp V_0\mid V_1$. We have (confirm increasing)
+\end{pmatrix}
+$$
+
+So $V_2\perp V_0\mid V_1$. We have (confirm increasing)
 
 $$
 \begin{aligned}
