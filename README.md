@@ -92,7 +92,7 @@ $$
 \exists x \in \mathbb{R}: \{p_{n-1}^T(v_{n-1})>0\}=[x,\infty)
 $$
 
-Thus $\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})$ is also increasing, and so is the product
+Thus $\mathbf{1}_ {p_{n-1}^T(v_{n-1})>0}(V_{n-1})$ is also increasing, and so is the product
 
 $$
 g(V_{n-1})=p_{n-1}^T(V_{n-1})\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})
@@ -204,7 +204,7 @@ That is, proceeding from $n$ to $n-1$ yields the known value of $v_0$, less all 
 
 **todo: generalize to complete information i.e. $v_0=g_n(v_n)$**
 
-**Proposition 5 (set of signals endorsed by Tarquinian policy unbounded above).** *If the real set ${S_n \coloneqq \{v_n: p_n^T(v_n)>0\}}$ is non-empty, it is a right-unbounded interval.*
+**Proposition 5 (set of signals endorsed by Tarquinian policy unbounded above).** If the real set ${S_n \coloneqq \{v_n: p_n^T(v_n)>0\}}$ is non-empty, it is a right-unbounded interval.
 
 **Proof.** 
 Suppose $a \in S_n$ and take arbitrary $c \gt a$. Note that since $p_n^T$ is nondecreasing, $c \in S_n$. But for arbitrary $b \in (a,c)$, we have $b \gt a \implies b \in S_n$ for the same reason; thus, $S_n$ is an interval. By the same reasoning, $a \in S_n \implies 2a \in S_n$, thus $S_n$ is right-unbounded. □
@@ -228,25 +228,47 @@ However, in general the VOI is simply the difference between the values of the p
 **Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then **(need to explain $v^*$)**:
 
 $$
-\begin{aligned}
-p_n^T(v_n) &= \frac{1}{\sigma_{n-1|n}}\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})\phi\left(\frac{v_{n-1}-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}\right) dv_{n-1} - c_{n-1} \\
-&= \int_{\frac{v_{n-1}^*-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}}^\infty p_{n-1}^T(\mu_{n-1|n}(v_n)+z\sigma_{n-1|n})\phi(z)dz - c_{n-1} \\
-\end{aligned}
+p_n^T(v_n) = \frac{1}{\sigma_{n-1|n}}\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})\phi\left(\frac{v_{n-1}-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}\right) dv_{n-1} - c_{n-1}
 $$
 
-**Example.** $V = \begin{pmatrix}V_2\\V_1\\V_0\end{pmatrix} \sim \mathcal{N} \left(\begin{pmatrix}1\\0.5\\-0.2\end{pmatrix},\begin{pmatrix}
-1 & 0.3 & 0.15\\[4pt]
-0.3 & 1 & 0.5\\[4pt]
-0.15 & 0.5 & 2
-\end{pmatrix}\right), c=\begin{pmatrix}0\\0.05\\0.1\end{pmatrix}, t=1$
+$$
+= \int_{\frac{v_{n-1}^*-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}}^\infty p_{n-1}^T(\mu_{n-1|n}(v_n)+z\sigma_{n-1|n})\phi(z)dz - c_{n-1}
+$$
 
-Note that $
+**Example.** 
+
+$$
+V = \begin{pmatrix}
+V_2 \\ 
+V_1 \\ 
+V_0 
+\end{pmatrix} \sim \mathcal{N} \left(\begin{pmatrix}
+1 \\
+0.5 \\
+-0.2
+\end{pmatrix},\begin{pmatrix}
+1 & 0.3 & 0.15 \\
+0.3 & 1 & 0.5 \\
+0.15 & 0.5 & 2
+\end{pmatrix}\right), c=\begin{pmatrix}
+0 \\
+0.05 \\
+0.1
+\end{pmatrix}, t=1
+$$
+
+Note that 
+
+$$
 \Sigma^{-1}=
 \begin{pmatrix}
-\frac{100}{91} & -\frac{30}{91} & 0\\[6pt]
--\frac{30}{91} & \frac{113}{91} & -\tfrac{2}{7}\\[6pt]
+\frac{100}{91} & -\frac{30}{91} & 0\\
+-\frac{30}{91} & \frac{113}{91} & -\tfrac{2}{7}\\
 0 & -\tfrac{2}{7} & \tfrac{4}{7}
-\end{pmatrix}$, so $V_2\perp V_0\mid V_1$. We have (confirm increasing)
+\end{pmatrix}
+$$
+
+So $V_2\perp V_0\mid V_1$. We have (confirm increasing)
 
 $$
 \begin{aligned}
@@ -340,12 +362,12 @@ plt.show()
 2. Calculate $p_0^T(v_0) = v_0-t$
 3. For $n=1,...,N$:
 
-    a. Determine $v_{n-1}^*$ such that $v_{n-1}^*=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})=0\}$ (possibly using a root-finding algorithm)
+    a. Determine $v_{n-1}^\*$ such that $v_{n-1}^*=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})=0\}$ (possibly using a root-finding algorithm)
 
     b. Calculate $p_n^T(v_n)=\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}$
 
 4. Calculate $v_N^*$ as specified in 3a.
-5. Return $v^* \coloneqq v_N^*,...,v_0^*$
+5. Return $v^\* \coloneqq v_N^\*,...,v_0^\*$
 
 ### Algorithm 2 (inference)
 
