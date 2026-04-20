@@ -384,11 +384,17 @@ plt.show()
 2. Return $r \coloneqq r_N,...,r_0$
 
 ### Implementation
-Here we use a Gaussian mixture model (GMM) to implement the Tarquin Algorithm, as it provides a simple approach that still yields analytical conditional densities. We leave the number of components `k` as a hyperparameter. We use adaptive quadrature for integral evaluation...
+We use a Gaussian mixture model (GMM) for the joint density $f(v_N,...,v_0)$, which gives analytical conditional densities at negligible cost: for each component, $f_{n-1|n}$ is Gaussian via the standard conditioning formula, and the mixture weights are rescaled by each component's marginal density at $v_n$. The number of components $k$ is left as a hyperparameter.
 
+Training (Algorithm 1) iterates $n=1,...,N$, building $p_n^T$ as a closure that integrates each component in standardized coordinates $z=(v_{n-1}-\mu_k)/\sigma_k$ so the density is always $\phi(z)$ regardless of where $v_n$ lands. We split the integration at $z=0$ so adaptive quadrature (`scipy.integrate.quad`) always samples the peak even when the lower bound is far in the tail. Thresholds $v_n^*$ are found via `scipy.optimize.brentq`, which is justified by Proposition 3 (monotonicity).
 
+Inference (Algorithm 2) is a threshold walk from the top prophecy down, short-circuiting to zero on the first failure.
 
+Abridgements and rearrangements are handled uniformly: both reduce to selecting a column ordering (a subset and/or permutation) from the full joint GMM, marginalizing to those columns, and running the same training routine. An `enumerate_abridgements` helper yields the $2^{|\delta|-1}-1$ subsets that preserve $V_0$.
 
+The implementation reproduces the Gaussian example above to four decimal places ($v_1^* \approx 0.1204$, $v_2^* \approx 0.2886$).
+
+**(abridgements -> skip steps, trilogies -> rearrangements)**
 
 
 **(abridgements -> skip steps, trilogies -> rearrangements)**
