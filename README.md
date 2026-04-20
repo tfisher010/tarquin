@@ -395,6 +395,3 @@ Abridgements and rearrangements are handled uniformly: both reduce to selecting 
 The implementation reproduces the Gaussian example above to four decimal places ($v_1^* \approx 0.1204$, $v_2^* \approx 0.2886$).
 
 **(abridgements -> skip steps, trilogies -> rearrangements)**
-
-
-**(abridgements -> skip steps, trilogies -> rearrangements)**
