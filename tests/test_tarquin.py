@@ -200,3 +200,66 @@ def test_abridgement_dominance_regression():
         means[book] = tq.evaluate_policy_mc(S, book, v, cost, t=1.0).mean()
     assert means[(1, 2)] > means[(0, 1, 2)]
     assert means[(0, 2)] > means[(0, 1, 2)]
+
+
+# --- fixes from the review -----------------------------------------------------
+
+
+def test_always_proceed_threshold_is_neg_inf():
+    # Zero costs with a modest t: proceeding is worthwhile even at the lowest modeled
+    # signal, so S_n covers the grid and the threshold saturates to -inf (not grid[0]).
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    with pytest.warns(UserWarning, match="saturated to -inf"):
+        v_star, _ = tq.train_tarquin(pairs, np.array([0.0, 0.0]), t=1.0, monotone="off")
+    assert v_star[0] == -np.inf  # v_2*
+    assert v_star[1] == -np.inf  # v_1*
+    assert v_star[2] == pytest.approx(1.0, abs=1e-9)  # v_0* = t, still finite
+
+
+def test_diagnose_fosd_flags_violation():
+    # FOSD-true Markov demo: small violation. U-shaped (non-FOSD) data: large.
+    assert tq.diagnose_fosd(tq.make_demo_data())["max"] < 0.15
+    assert tq.diagnose_fosd(_nonmonotone_data())["max"] > 0.5
+
+
+def test_diagnose_sufficiency_on_markov_demo():
+    # make_demo_data is a genuine Markov chain, so partial correlations are ~0.
+    out = tq.diagnose_sufficiency(tq.make_demo_data())
+    assert out["partial_corr"].shape == (1,)  # one interior column for N=2
+    assert out["max_abs"] < 0.1
+
+
+def test_bic_selects_components_and_trains():
+    arr = tq.make_demo_data()
+    pairs = tq.fit_pairwise_gmms(arr, n_components=range(1, 5), n_init=1)
+    assert len(pairs) == 2
+    assert all(1 <= p.n_components <= 4 for p in pairs)
+    v_star, _ = tq.train_tarquin(
+        pairs, np.array([100.0, 100.0]), t=float(np.median(arr[:, 2])), monotone="off"
+    )
+    assert np.isfinite(v_star[2])
+
+
+def test_fit_empty_candidate_list_raises():
+    with pytest.raises(ValueError, match="positive int or a nonempty sequence"):
+        tq.fit_pairwise_gmms(tq.make_demo_data(), n_components=[])
+
+
+def test_marginalize_handles_nonfull_covariance():
+    # A diag-covariance joint must still marginalize and stay sklearn-usable.
+    g = tq.fit_joint_gmm(tq.make_demo_data(), n_components=3, covariance_type="diag")
+    m = tq.marginalize_gmm(g, [0, 1])
+    X, _ = m.sample(50)
+    assert X.shape == (50, 2)
+    assert np.all(np.isfinite(m.score_samples(X)))
+
+
+def test_holdout_split_is_disjoint_partition():
+    data = tq.make_demo_data()
+    train, test = tq.holdout_split(data, test_frac=0.25, seed=0)
+    assert train.shape[0] + test.shape[0] == data.shape[0]
+    assert test.shape[0] == round(data.shape[0] * 0.25)
+    # union of rows equals the original set (disjoint partition)
+    assert {tuple(r) for r in np.vstack([train, test])} == {tuple(r) for r in data}
+    with pytest.raises(ValueError, match="test_frac"):
+        tq.holdout_split(data, test_frac=1.5)
