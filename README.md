@@ -3,6 +3,41 @@ It's said that a sibyl once offered a Roman king named Tarquinius nine books of 
 
 Since ancient times, new information has altered our valuations of complex assets in counterintuitive ways. Paid information sources are the Sibylline Books of today's information-rich world; few are worth their price, and some can be deceptive. To help navigate this problem, we offer a measure-theoretic framework for optimizing information acquisition decisions under a sufficiency condition, supporting an evenhanded consideration of noisy, incomplete, or oddly presented information.
 
+## Installation
+
+```bash
+pip install git+https://github.com/tfisher010/tarquin
+```
+
+Runtime dependencies (`numpy`, `scikit-learn`) install automatically; Python >= 3.9. The plotting snippets in this README additionally need `matplotlib`. To develop or run the tests, clone the repo and:
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+## Quickstart
+
+```python
+import numpy as np
+import tarquin as tq
+
+# Data: columns in README order (V_N, ..., V_0), payoff prophecy V_0 last. Here N = 2.
+data = tq.make_demo_data()                       # or your own (n_samples, N+1) array
+
+# Fit the N adjacent-pair conditionals the recursion needs (sufficiency).
+pairs = tq.fit_pairwise_gmms(data, n_components=5)
+
+# Train: thresholds v* = (v_N*, ..., v_0*) for cost vector c = (c_{N-1}, ..., c_0)
+# and overhead t.
+v_star, _ = tq.train_tarquin(pairs, c=np.array([100.0, 100.0]), t=float(np.median(data[:, -1])))
+
+# Infer: which prophecies should the buyer purchase for a new draw v = (v_N, ..., v_0)?
+r = tq.infer_tarquin(v_star, data[0])
+```
+
+The `__main__` block in `tarquin.py` is a fuller example: the worked Gaussian case below, Monte-Carlo policy evaluation, and abridgement ranking. A function-level API reference is in the [API](#api) section.
+
 ## The Tarquin Game
 ### Setup
 Consider a game between two players, a *vendor* and a *buyer*. The vendor is equipped with a sequence of *prophecies* $V=V_N,...,V_0 \in L^1(\mathbb{P})$, that is, random variables defined on a single probability space and integrable with finite expectation and two additional properties:
@@ -343,6 +378,27 @@ Abridgements and rearrangements are handled uniformly: both reduce to selecting 
 In every book the top prophecy is observed for free (it is the buyer's starting signal), so its cost entry is unused. Consequently, comparing a book against its abridgements compares policies that see a *different* prophecy at no cost, not merely policies that carry less information; an abridgement can therefore outrank the full book when the prophecy it gets for free is the more valuable starting point. In the worked example the full book $(V_2,V_1,V_0)$ is in fact dominated by both two-prophecy abridgements.
 
 The implementation reproduces the Gaussian example above to four decimal places ($v_1^\ast \approx 0.1204$, $v_2^\ast \approx 0.2886$).
+
+### API
+
+All public functions take and return columns in README order (V_N, ..., V_0).
+
+*Core.*
+- `train_tarquin(pairs, c, t)` -> `(v_star, tab)` — Algorithm 1: thresholds `v_star = (v_N*, ..., v_0*)` by grid value-function iteration. `tab` holds the grids and tabulated value functions.
+- `infer_tarquin(v_star, v)` -> `r` — Algorithm 2: the {0,1} purchase decisions for one draw.
+
+*Modeling the conditionals.*
+- `fit_pairwise_gmms(data, n_components=5)` — fit one 2-D GMM per adjacent pair (the recommended input to `train_tarquin`).
+- `fit_joint_gmm(data, n_components=10)` + `pairs_from_joint(gmm, col_order)` — fit a single joint, then extract a book's adjacent pairs; use when ranking abridgements/rearrangements that need conditionals for arbitrary pairs.
+- `marginalize_gmm(gmm, dims)` — low-level GMM marginalization.
+
+*Books (subsets / reorderings).*
+- `train_book(gmm_full, col_order, cost_per_prophecy, t)` — train on a subset and/or permutation of columns.
+- `enumerate_abridgements(col_order)` — yield the $2^{|\delta|-1}-2$ abridgements that keep $V_0$.
+- `evaluate_policy_mc(samples, col_order, v_star, cost_per_prophecy, t)` — per-sample payoffs under the learned policy.
+
+*Data.*
+- `make_demo_data(n=2056, seed=0)` — a deterministic synthetic dataset (a Markov chain matching the sufficiency assumption) for examples and tests.
 
 ## Interpretation and special cases
 
