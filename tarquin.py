@@ -754,9 +754,11 @@ def bootstrap_thresholds(
       "samples"  : (n_boot, N+1) bootstrap thresholds; a saturated endorsement set on a
                    replicate appears as ±inf (rows in README order).
       "mean"/"std": (N+1,) over the *finite* replicates per threshold (nan if none).
-      "ci_low"/"ci_high": (N+1,) percentile interval at level `ci`, computed over all
-                   replicates so a column that saturates often carries an honest ±inf tail.
-      "n_finite" : (N+1,) count of finite replicates per threshold.
+      "ci_low"/"ci_high": (N+1,) percentile interval at level `ci`, over the finite
+                   replicates (nan if a threshold never resolved). Read alongside
+                   "n_finite": a low finite count means the interval omits saturated
+                   replicates and the threshold is genuinely unstable on this sample.
+      "n_finite" : (N+1,) count of finite replicates per threshold (of `n_boot`).
     """
     if not 0.0 < ci < 1.0:
         raise ValueError(f"ci must be in (0, 1); got {ci}")
@@ -781,12 +783,14 @@ def bootstrap_thresholds(
     masked = np.where(finite, samples, np.nan)
     lo_q, hi_q = 100.0 * (1.0 - ci) / 2.0, 100.0 * (1.0 + ci) / 2.0
     with warnings.catch_warnings():
-        # all-inf column -> nan mean/std; inf-inf during percentile interpolation -> nan.
+        # A column with no finite replicate is all-nan -> nan summaries (suppress the
+        # numpy "empty slice" / "all-nan" RuntimeWarnings). The CI is over the finite
+        # replicates so a handful of saturated (+/-inf) replicates do not poison it.
         warnings.simplefilter("ignore", RuntimeWarning)
         mean = np.nanmean(masked, axis=0)
         std = np.nanstd(masked, axis=0)
-        ci_low = np.percentile(samples, lo_q, axis=0)
-        ci_high = np.percentile(samples, hi_q, axis=0)
+        ci_low = np.nanpercentile(masked, lo_q, axis=0)
+        ci_high = np.nanpercentile(masked, hi_q, axis=0)
     return {
         "point": point,
         "samples": samples,
