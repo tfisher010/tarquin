@@ -263,3 +263,51 @@ def test_holdout_split_is_disjoint_partition():
     assert {tuple(r) for r in np.vstack([train, test])} == {tuple(r) for r in data}
     with pytest.raises(ValueError, match="test_frac"):
         tq.holdout_split(data, test_frac=1.5)
+
+
+# --- fixes from the second review --------------------------------------------
+
+
+@pytest.mark.parametrize("ct", ["full", "tied", "diag", "spherical"])
+def test_fit_pairwise_all_covariance_types_train(ct):
+    # Every advertised covariance_type must feed train_tarquin: a non-"full" fit is
+    # densified to the (K, D, D) layout the recursion indexes (previously crashed).
+    arr = tq.make_demo_data()
+    pairs = tq.fit_pairwise_gmms(arr, n_components=3, covariance_type=ct)
+    assert all(p.covariance_type == "full" for p in pairs)
+    v_star, _ = tq.train_tarquin(
+        pairs, np.array([100.0, 100.0]), t=float(np.median(arr[:, 2])), monotone="off"
+    )
+    assert v_star.shape == (3,)
+    assert np.isfinite(v_star[2])
+
+
+def test_degenerate_grid_raises():
+    # A conditioning column with zero variance collapses its grid to a point; the
+    # builder must raise rather than later divide by dx = 0.
+    g = GaussianMixture(n_components=1, covariance_type="full")
+    g.weights_ = np.array([1.0])
+    g.means_ = np.array([[0.0, 0.0]])
+    g.covariances_ = np.array([[[0.0, 0.0], [0.0, 1.0]]])  # V_1 (col 0) has zero variance
+    with pytest.raises(ValueError, match="degenerate grid"):
+        tq.train_tarquin([g], np.array([0.1]), t=0.0)
+
+
+def test_bootstrap_thresholds_shapes_and_ci():
+    arr = tq.make_demo_data()
+    c, t = np.array([100.0, 100.0]), float(np.median(arr[:, 2]))
+    out = tq.bootstrap_thresholds(arr, c, t, n_boot=20, n_components=4, seed=0)
+    assert out["point"].shape == (3,)
+    assert out["samples"].shape == (20, 3)
+    for key in ("mean", "std", "ci_low", "ci_high", "n_finite"):
+        assert out[key].shape == (3,)
+    # v_0* = t exactly on every replicate: zero spread, CI collapses to t.
+    assert out["ci_low"][2] == pytest.approx(t, abs=1e-9)
+    assert out["ci_high"][2] == pytest.approx(t, abs=1e-9)
+    # Where finite, the CI brackets the mean (ordering sanity).
+    for i in range(3):
+        if out["n_finite"][i] and np.isfinite(out["ci_low"][i]):
+            assert out["ci_low"][i] <= out["mean"][i] + 1e-9
+            assert out["mean"][i] <= out["ci_high"][i] + 1e-9
+    with pytest.raises(ValueError, match="ci must be"):
+        tq.bootstrap_thresholds(arr, c, t, n_boot=2, ci=1.5)
