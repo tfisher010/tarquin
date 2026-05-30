@@ -14,8 +14,8 @@ A sequence of prophecies $V=\{V_i\}_{i \in \delta}$ is called a *book* with *ind
 Note that staying at the level of conditional expectations and Markov sufficiency, rather than adopting Bayesian machinery, keeps the framework agnostic about how the joint distribution over $V$ is produced (empirical, generative, or posterior-derived) and avoids committing to priors or likelihood factorizations the practitioner may not have. The structural assumption on $V$ remains cleanly separated from the decision rule, and the same algorithm covers settings ranging from population filtering against historical data to fully Bayesian belief updating.
 
 ### Gameplay
-At the outset the vendor, eager for business, provides the buyer with a large sample draw from $V$, allowing both to estimate the joint density $f(v_N,...,v_0)$ (which exists as all $V_n$ are measurable over $\mathbb{P}$).
-After observing $f$ the vendor chooses a cost vector $c \in \mathbb{R}^N$ to price $V$ (for now we take $c$ as given and disregard optimal pricing) and the buyer chooses a policy vector $r=\{r_N,...,r_0\}: \mathbf{R}^N \mapsto \{0,1\}^N$, where $r_n(v_n)$ determines whether to purchase prophecy $v_{n-1}$ given the observed value of $v_n$. Finally, a single sample $v \in \mathbb{R}^N$ is drawn from $V$, and the buyer's payoff $\pi_N$ is determined by:
+At the outset the vendor, eager for business, provides the buyer with a large sample draw from $V$, allowing both to estimate the joint density $f(v_N,...,v_0)$ (which we assume to exist, i.e. $V$ has an absolutely continuous joint law; mere measurability would not suffice).
+After observing $f$ the vendor chooses a nonnegative cost vector $c \in \mathbb{R}^N$ to price $V$ (for now we take $c$ as given and disregard optimal pricing) and the buyer chooses a policy $r=(r_N,...,r_0)$, where each $r_n: \mathbb{R} \to \{0, 1\}$ and $r_n(v_n)$ determines whether to purchase prophecy $v_{n-1}$ given the observed value of $v_n$. Finally, a single sample $v \in \mathbb{R}^{N+1}$ is drawn from $V$, and the buyer's payoff $\pi_N$ is determined by:
 
 $$
 \begin{equation}
@@ -34,9 +34,11 @@ A policy $r^T$ is *Tarquinian* if it satisfies
 
 $$
 \begin{equation}
-r^T_n=\text{arg max}_{r_n} E(\pi_n|V,r) \forall n\in\{0,...,N\}
+r^T_n=\text{arg max}_{r_n} E(\pi_n|V_n=v_n,r) \quad \forall n\in\{0,...,N\}
 \end{equation}
 $$
+
+The expectation conditions on $V_n=v_n$, the only information available to the buyer when setting $r_n$; conditioning on the full draw $V$ would make $\pi_n$ deterministic and the decision clairvoyant. Since each $\pi_n$ depends on the downstream decisions $r_{n-1},...,r_0$, (2) is a system whose nodewise optima are resolved together by the backward recursion below.
 
 **Proposition 1 (end-state Tarquinian policy).** For any $V,c,t$, we have $r_0^T(v_0)=\mathbf{1}_{v_0>t}$.
 
@@ -72,10 +74,10 @@ $$
 $$
 \begin{equation}
 \begin{aligned}
-r_n^T &= \text{arg max}_{r_n} E(\pi_n|V,r) \\
-&= \text{arg max}_{r_n} E(r_n(v_n)(\pi_{n-1}(V,r)-c_{n-1})|V,r) \\
-&= \text{arg max}_{r_n} r_n(v_n) E(\pi_{n-1}(V,r)-c_{n-1}|V,r) \\
-&= \text{arg max}_{r_n} r_n(v_n) (E(\pi_{n-1}(V,r)|V,r)-c_{n-1}) \\
+r_n^T &= \text{arg max}_{r_n} E(\pi_n|V_n=v_n,r) \\
+&= \text{arg max}_{r_n} E(r_n(v_n)(\pi_{n-1}(V,r)-c_{n-1})|V_n=v_n,r) \\
+&= \text{arg max}_{r_n} r_n(v_n) E(\pi_{n-1}(V,r)-c_{n-1}|V_n=v_n,r) \\
+&= \text{arg max}_{r_n} r_n(v_n) (E(\pi_{n-1}(V,r)|V_n=v_n,r)-c_{n-1}) \\
 &= \text{arg max}_{r_n} r_n(v_n) p_n(v_n)
 \end{aligned}
 \end{equation}
@@ -101,7 +103,7 @@ $$
 
 is non-decreasing. □
 
-**Corollary (endorsement set is a right-unbounded interval).** Since $p_n^T$ is weakly increasing (Prop. 3), the endorsement set $S_n \coloneqq \{v_n: p_n^T(v_n)>0\}$ is either empty or a right-unbounded interval. Writing $v_n^* \coloneqq \inf S_n$, the recursion below integrates over $S_{n-1}=(v_{n-1}^*,\infty)$ and inference reduces to a single threshold per step.
+**Corollary (endorsement set is a right-unbounded interval).** Since $p_n^T$ is weakly increasing (Prop. 3), the endorsement set $S_n \coloneqq \{v_n: p_n^T(v_n)>0\}$ is either empty or a right-unbounded interval. Writing $v_n^\ast \coloneqq \inf S_n$, the recursion below integrates over $S_{n-1}=(v_{n-1}^\ast,\infty)$ and inference reduces to a single threshold per step.
 
 **Proposition 4 (value of proceeding, integral form).** If $f_{n-1|n}$ is the density of $V_{n-1}|V_n$ then
 
@@ -151,14 +153,14 @@ $$
 
 For instance, $p_1^T(v_1)=\int_t^\infty(v_0-t)f_{0|1}(v_0|v_1)dv_0-c_0$.
 
-**Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then **(need to explain $v^*$)**:
+**Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then **(need to explain $v^\ast$)**:
 
 $$
-p_n^T(v_n) = \frac{1}{\sigma_{n-1|n}}\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})\phi\left(\frac{v_{n-1}-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}\right) dv_{n-1} - c_{n-1}
+p_n^T(v_n) = \frac{1}{\sigma_{n-1|n}}\int_{v_{n-1}^\ast}^\infty p_{n-1}^T(v_{n-1})\phi\left(\frac{v_{n-1}-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}\right) dv_{n-1} - c_{n-1}
 $$
 
 $$
-= \int_{\frac{v_{n-1}^*-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}}^\infty p_{n-1}^T(\mu_{n-1|n}(v_n)+z\sigma_{n-1|n})\phi(z)dz - c_{n-1}
+= \int_{\frac{v_{n-1}^\ast-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}}^\infty p_{n-1}^T(\mu_{n-1|n}(v_n)+z\sigma_{n-1|n})\phi(z)dz - c_{n-1}
 $$
 
 **Example.** 
@@ -230,7 +232,7 @@ plt.legend()
 ```
 ![visual2](visual2.png)
 
-We do not analytically derive $p_2^T(v_2) = \int_{\frac{v_1^*-\mu_{1|2}(v_2)}{\sigma_{1|2}}}^\infty p_1^T(\mu_{1|2}(v_2)+z\sigma_{1|2})\phi(z)dz - c_1$, but we can numerically find and validate its root ($\approx 0.2886$):
+We do not analytically derive $p_2^T(v_2) = \int_{\frac{v_1^\ast-\mu_{1|2}(v_2)}{\sigma_{1|2}}}^\infty p_1^T(\mu_{1|2}(v_2)+z\sigma_{1|2})\phi(z)dz - c_1$, but we can numerically find and validate its root ($\approx 0.2886$):
 ```
 import numpy as np 
 from matplotlib import pyplot as plt
@@ -275,7 +277,7 @@ plt.show()
 
 **Inputs:** Joint distribution $f(v_N,...,v_0)$, cost vector $c_N,...,c_0$, tightness parameter $t$.
 
-**Output:** Tarquinian values $v^*\in\mathbb{R}^N$.
+**Output:** Tarquinian values $v^\ast\in\mathbb{R}^N$.
 
 1. For $n=1,...,N$:
 
@@ -288,37 +290,37 @@ plt.show()
 2. Calculate $p_0^T(v_0) = v_0-t$
 3. For $n=1,...,N$:
 
-    a. Determine $v_{n-1}^*$ such that $v_{n-1}^*=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})=0\}$ (possibly using a root-finding algorithm)
+    a. Determine $v_{n-1}^\ast$ such that $v_{n-1}^\ast=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})=0\}$ (possibly using a root-finding algorithm)
 
-    b. Calculate $p_n^T(v_n)=\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}$
+    b. Calculate $p_n^T(v_n)=\int_{v_{n-1}^\ast}^\infty p_{n-1}^T(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}$
 
-4. Calculate $v_N^*$ as specified in 3a.
-5. Return $v^* \coloneqq v_N^*,...,v_0^*$
+4. Calculate $v_N^\ast$ as specified in 3a.
+5. Return $v^\ast \coloneqq v_N^\ast,...,v_0^\ast$
 
 ### Algorithm 2 (inference)
 
-**Inputs:** Value-of-proceeding function $p^T$, value draw $v\in \mathbb{R}^N$.
+**Inputs:** Value-of-proceeding function $p^T$, value draw $v\in \mathbb{R}^{N+1}$.
 
-**Outputs:** Boolean decision vector $r\in \{0,1\}^N$.
+**Outputs:** Boolean decision vector $r\in \{0, 1\}^{N+1}$.
 
 1. For $n=N,...,1$:
 
-    a. If $v_n \geq v_n^*$, set $r_n=1$.
+    a. If $v_n \gt v_n^\ast$, set $r_n=1$.
 
-    b. Otherwise, set $r_i=0 \forall i \leq n$ and break.
+    b. Otherwise, set $r_i=0 \; \forall i \leq n$ and break.
 
 2. Return $r \coloneqq r_N,...,r_0$
 
 ### Implementation
 We use a Gaussian mixture model (GMM) for the joint density $f(v_N,...,v_0)$, which gives analytical conditional densities at negligible cost: for each component, $f_{n-1|n}$ is Gaussian via the standard conditioning formula, and the mixture weights are rescaled by each component's marginal density at $v_n$. The number of components $k$ is left as a hyperparameter.
 
-Training (Algorithm 1) iterates $n=1,...,N$, building $p_n^T$ as a closure that integrates each component in standardized coordinates $z=(v_{n-1}-\mu_k)/\sigma_k$ so the density is always $\phi(z)$ regardless of where $v_n$ lands. We split the integration at $z=0$ so adaptive quadrature (`scipy.integrate.quad`) always samples the peak even when the lower bound is far in the tail. Thresholds $v_n^*$ are found via `scipy.optimize.brentq`, which is justified by Proposition 3 (monotonicity).
+Training (Algorithm 1) iterates $n=1,...,N$, building $p_n^T$ as a closure that integrates each component in standardized coordinates $z=(v_{n-1}-\mu_k)/\sigma_k$ so the density is always $\phi(z)$ regardless of where $v_n$ lands. We split the integration at $z=0$ so adaptive quadrature (`scipy.integrate.quad`) always samples the peak even when the lower bound is far in the tail. Thresholds $v_n^\ast$ are found via `scipy.optimize.brentq`, which is justified by Proposition 3 (monotonicity).
 
 Inference (Algorithm 2) is a threshold walk from the top prophecy down, short-circuiting to zero on the first failure.
 
 Abridgements and rearrangements are handled uniformly: both reduce to selecting a column ordering (a subset and/or permutation) from the full joint GMM, marginalizing to those columns, and running the same training routine. An `enumerate_abridgements` helper yields the $2^{|\delta|-1}-2$ subsets that preserve $V_0$.
 
-The implementation reproduces the Gaussian example above to four decimal places ($v_1^* \approx 0.1204$, $v_2^* \approx 0.2886$).
+The implementation reproduces the Gaussian example above to four decimal places ($v_1^\ast \approx 0.1204$, $v_2^\ast \approx 0.2886$).
 
 **(abridgements -> skip steps, trilogies -> rearrangements)**
 
@@ -363,6 +365,10 @@ $$
 
 (For $m=2$ both sums become $c_{n+1}$ resp. $0$, recovering equation (5). At each step the high branch can itself be negative; once the cumulative cost catches up to $p_{n+1}^T$, the low branch takes over for all subsequent $m$.)
 
+The simplest instance is a single isolated prophecy, $V_1 \perp V_0$ with $V_0$ standard normal, where $p_1^T$ is the constant $\int_t^\infty (v_0-t)f_0(v_0)\,dv_0 - c_0 = \phi(t) - t(1-\Phi(t)) - c_0$. The buyer should proceed iff $c_0 \leq \phi(t)-t(1-\Phi(t))$; the figure below colors the empirical sign of $\bar p_1$ over $(t,c_0)$ against this analytic boundary.
+
+![visual1](visual1.png)
+
 **Remark (crystal ball prophecy).** If for some $n \gt 0$ $V_n=V_{n-1}=...=V_0$ we have
 
 $$
@@ -380,9 +386,9 @@ $$
 
 **Proposition 5 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=({p_n^T}^{-1}(0), \infty)$.
 
-**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing it is injective, and the assumed zero is therefore unique, so $v^* \coloneqq {p_n^T}^{-1}(0)$ is well defined. From strict monotonicity, $v' \lt v^* \implies p_n^T(v') \lt 0 \implies v' \notin S_n$, while $v' \gt v^* \implies p_n^T(v') \gt 0 \implies v' \in S_n$. Since $p_n^T(v^*)=0$, $v^* \notin S_n$ either. So $S_n=(v^*, \infty)$, $v^* = \inf S_n$. □
+**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing it is injective, and the assumed zero is therefore unique, so $v^\ast \coloneqq {p_n^T}^{-1}(0)$ is well defined. From strict monotonicity, $v' \lt v^\ast \implies p_n^T(v') \lt 0 \implies v' \notin S_n$, while $v' \gt v^\ast \implies p_n^T(v') \gt 0 \implies v' \in S_n$. Since $p_n^T(v^\ast)=0$, $v^\ast \notin S_n$ either. So $S_n=(v^\ast, \infty)$, $v^\ast = \inf S_n$. □
 
-This sharpens the corollary (which only needs weak monotonicity): under strict monotonicity the threshold $v_n^*=\inf S_n$ is the unique root of $p_n^T$. The algorithm does not rely on it, since `_find_threshold` returns $\inf\{p_n^T \geq 0\}$ under weak monotonicity alone, and a flat zero region is payoff-indifferent.
+This sharpens the corollary (which only needs weak monotonicity): under strict monotonicity the threshold $v_n^\ast=\inf S_n$ is the unique root of $p_n^T$. The algorithm does not rely on it, since `_find_threshold` returns $\inf\{p_n^T \geq 0\}$ under weak monotonicity alone, and a flat zero region is payoff-indifferent.
 
 **todo: can we generalize this to broader p (nondecreasing with a unique zero)**
 
