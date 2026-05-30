@@ -34,6 +34,14 @@ v_star, _ = tq.train_tarquin(pairs, c=np.array([100.0, 100.0]), t=float(np.media
 
 # Infer: which prophecies should the buyer purchase for a new draw v = (v_N, ..., v_0)?
 r = tq.infer_tarquin(v_star, data[0])
+
+# Evaluate honestly: fit on train, score the policy on a holdout (not the fitting sample).
+train, test = tq.holdout_split(data, test_frac=0.3)
+v_star, _ = tq.train_tarquin(tq.fit_pairwise_gmms(train), c=np.array([100.0, 100.0]), t=80.0)
+pi = tq.evaluate_policy_mc(test, (0, 1, 2), v_star, np.array([np.nan, 100.0, 100.0]), t=80.0)
+
+# Quantify threshold uncertainty (bootstrap CIs over refit replicates).
+boot = tq.bootstrap_thresholds(data, c=np.array([100.0, 100.0]), t=80.0, n_boot=200)
 ```
 
 The `__main__` block in `tarquin.py` is a fuller example: the worked Gaussian case below, Monte-Carlo policy evaluation, and abridgement ranking. A function-level API reference is in the [API](#api) section.
@@ -390,7 +398,7 @@ All public functions take and return columns in README order (V_N, ..., V_0).
 - `infer_tarquin(v_star, v)` -> `r` — Algorithm 2: the {0,1} purchase decisions for one draw.
 
 *Modeling the conditionals.*
-- `fit_pairwise_gmms(data, n_components=5)` — fit one 2-D GMM per adjacent pair (the recommended input to `train_tarquin`).
+- `fit_pairwise_gmms(data, n_components=5)` — fit one 2-D GMM per adjacent pair (the recommended input to `train_tarquin`). Any `covariance_type` (`full`/`tied`/`diag`/`spherical`) is accepted; a non-`full` fit is densified to the layout the recursion needs.
 - `fit_joint_gmm(data, n_components=10)` + `pairs_from_joint(gmm, col_order)` — fit a single joint, then extract a book's adjacent pairs; use when ranking abridgements/rearrangements that need conditionals for arbitrary pairs.
 - `marginalize_gmm(gmm, dims)` — low-level GMM marginalization.
 
@@ -402,6 +410,9 @@ All public functions take and return columns in README order (V_N, ..., V_0).
 *Assumption diagnostics.* Both are *necessary* (not sufficient) data-level checks; combine them with the training-time monotonicity warning, which acts on the fitted conditionals.
 - `diagnose_sufficiency(data)`: partial correlation of each non-adjacent outer pair given the middle prophecy; ~0 is consistent with the Markov assumption (Assumption 1). Linear, so it can miss nonlinear violations.
 - `diagnose_fosd(data)`: largest upward conditional-CDF step across $V_n$ bins; ~0 is consistent with stochastic monotonicity / FOSD (Assumption 2).
+
+*Uncertainty.*
+- `bootstrap_thresholds(data, c, t, n_boot=200, n_components=5)`: resample rows, refit the pairwise conditionals, and retrain on each replicate to get a bootstrap distribution of `v*`. Returns the point estimate, per-threshold mean/std, a percentile CI, and `n_finite` (how many replicates resolved each threshold, the rest having saturated to a $\pm\infty$ endorsement set). The CI is taken over the finite replicates; a low `n_finite` flags a threshold that is genuinely unstable on this sample rather than a number to trust.
 
 *Data.*
 - `make_demo_data(n=2056, seed=0)`: a deterministic synthetic dataset (a Markov chain matching the sufficiency assumption) for examples and tests.
