@@ -101,6 +101,8 @@ $$
 
 is non-decreasing. □
 
+**Corollary (endorsement set is a right-unbounded interval).** Since $p_n^T$ is weakly increasing (Prop. 3), the endorsement set $S_n \coloneqq \{v_n: p_n^T(v_n)>0\}$ is either empty or a right-unbounded interval. Writing $v_n^* \coloneqq \inf S_n$, the recursion below integrates over $S_{n-1}=(v_{n-1}^*,\infty)$ and inference reduces to a single threshold per step.
+
 **Proposition 4 (value of proceeding, integral form).** If $f_{n-1|n}$ is the density of $V_{n-1}|V_n$ then
 
 $$
@@ -148,79 +150,6 @@ v_0-t & n = 0
 $$
 
 For instance, $p_1^T(v_1)=\int_t^\infty(v_0-t)f_{0|1}(v_0|v_1)dv_0-c_0$.
-
-**Remark (independence).** If for some $n$, $V_{n+1} \perp V_n$, the Markov property (sufficiency) gives $V_{n'} \perp V_n$ and $f_{n|{n'}}(v_n|v_{n'})=f_n(v_n)$ for all $n' \gt n$. Then $p_{n+1}^T(v_{n+1})$ is constant:
-
-$$
-p_{n+1}^T(v_{n+1}) = p_{n+1}^T = \int_{S_n} p_n^T(v_n)f_n(v_n)\,dv_n-c_n
-$$
-
-so
-
-$$
-S_{n+1}=\begin{cases}
-\mathbb{R} & p_{n+1}^T \gt 0 \\
-\emptyset & p_{n+1}^T \leq 0
-\end{cases}
-$$
-
-and
-
-$$
-\begin{equation}
-p_{n+2}^T = \begin{cases}
-p_{n+1}^T-c_{n+1} & p_{n+1}^T \geq 0 \\
--c_{n+1} & p_{n+1}^T \lt 0
-\end{cases}
-\end{equation}
-$$
-
-That is, proceeding from $n+2$ to $n+1$ with certainty yields the same payoff as proceeding from $n+1$ to $n$, less the cost $c_{n+1}$ of acquiring $V_{n+1}$. By induction on $m$, each $p_{n+m}^T$ is also constant; for $m \geq 2$:
-
-$$
-p_{n+m}^T = \begin{cases}
-p_{n+1}^T-\sum_{i=n+1}^{n+m-1} c_i & p_{n+1}^T \geq \sum_{i=n+1}^{n+m-2} c_i \\
--c_{n+m-1} & p_{n+1}^T \lt \sum_{i=n+1}^{n+m-2} c_i 
-\end{cases}
-$$
-
-(For $m=2$ both sums become $c_{n+1}$ resp. $0$, recovering equation (5). At each step the high branch can itself be negative; once the cumulative cost catches up to $p_{n+1}^T$, the low branch takes over for all subsequent $m$.)
-
-**Remark (crystal ball prophecy).** If for some $n \gt 0$ $V_n=V_{n-1}=...=V_0$ we have
-
-$$
-\begin{equation}
-p_n^T(v_n) = \begin{cases}
-v_n-t-\sum_{i=0}^{n-1}c_i & v_n \gt t+\sum_{i=0}^{n-2}c_i \\
--c_{n-1} & v_n \leq t+\sum_{i=0}^{n-2}c_i
-\end{cases}
-\end{equation}
-$$
-
-(with empty sum $\sum_{i=0}^{-1} c_i = 0$ for $n=1$). The case split happens where the predecessor $p_{n-1}^T$ crosses zero, not where $p_n^T$ does. So on the gap $(t+\sum_{i=0}^{n-2}c_i,\; t+\sum_{i=0}^{n-1}c_i]$ the high branch applies but yields a negative value: every step below $n$ would proceed, yet the cumulative cost still exceeds the payoff, so the Tarquinian policy declines at step $n$.
-
-**todo: generalize to complete information i.e. $v_0=g_n(v_n)$**
-
-**Proposition 5 (set of signals endorsed by Tarquinian policy unbounded above).** If the real set ${S_n \coloneqq \{v_n: p_n^T(v_n)>0\}}$ is non-empty, it is a right-unbounded interval.
-
-**Proof.** 
-Suppose $a \in S_n$ and take arbitrary $c \gt a$. Note that since $p_n^T$ is nondecreasing, $c \in S_n$. But for arbitrary $b \in (a,c)$, we have $b \gt a \implies b \in S_n$ for the same reason; thus, $S_n$ is an interval. By the same reasoning, $a \in S_n \implies 2a \in S_n$, thus $S_n$ is right-unbounded. □
-
-**Proposition 6 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=({p_n^T}^{-1}(0), \infty)$.
-
-**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing hence bijective, $v^* \coloneqq {p_n^T}^{-1}(0)$ exists and is unique. From strict monotonicity, $v' \lt v^* \implies p_n^T(v') \lt 0 \implies v' \notin S_n$, while $v' \gt v^* \implies p_n^T(v') \gt 0 \implies v' \in S_n$. Since $p_n^T(v^*)=0$, $v^* \notin S_n$ either. So $S_n=(v^*, \infty)$, $v^* = \inf S_n$. □
-
-**todo: can we generalize this to broader p (nondecreasing with a unique zero)**
-
-**Remark (constrained VOI).** Given the ordering of $V$, a policy $r$, and fixing costs $c_{n-2},...,c_0$, the *value of information* $V_{n-1}$ is the expected payoff of the state in which the buyer has purchased that prophecy:
-
-$$
-\begin{equation}
-E(\pi_{n-1}|V_n=v_n) = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}, n \gt 0
-\end{equation}
-$$
-
-However, in general the VOI is simply the difference between the values of the purchased state and the next best alternative. For fixed $V$, the sole alternative is to exit, but if the buyer is allowed to skip $V_{n-1}$, there could be a better alternative, lowering the value of this prophecy. We will discuss this in more detail in a future section.
 
 **Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then **(need to explain $v^*$)**:
 
@@ -392,3 +321,77 @@ Abridgements and rearrangements are handled uniformly: both reduce to selecting 
 The implementation reproduces the Gaussian example above to four decimal places ($v_1^* \approx 0.1204$, $v_2^* \approx 0.2886$).
 
 **(abridgements -> skip steps, trilogies -> rearrangements)**
+
+## Interpretation and special cases
+
+The results below are *not* prerequisites for the Tarquin Algorithm, which runs on Propositions 2-4 and the corollary that the endorsement set is a right-unbounded interval. They record closed forms in limiting cases, a sharper characterization of the threshold, and the setup for an unconstrained value-of-information treatment. They are useful for intuition and for sanity-checking output, but the algorithm never invokes them.
+
+**Remark (independence).** If for some $n$, $V_{n+1} \perp V_n$, the Markov property (sufficiency) gives $V_{n'} \perp V_n$ and $f_{n|{n'}}(v_n|v_{n'})=f_n(v_n)$ for all $n' \gt n$. Then $p_{n+1}^T(v_{n+1})$ is constant:
+
+$$
+p_{n+1}^T(v_{n+1}) = p_{n+1}^T = \int_{S_n} p_n^T(v_n)f_n(v_n)\,dv_n-c_n
+$$
+
+so
+
+$$
+S_{n+1}=\begin{cases}
+\mathbb{R} & p_{n+1}^T \gt 0 \\
+\emptyset & p_{n+1}^T \leq 0
+\end{cases}
+$$
+
+and
+
+$$
+\begin{equation}
+p_{n+2}^T = \begin{cases}
+p_{n+1}^T-c_{n+1} & p_{n+1}^T \geq 0 \\
+-c_{n+1} & p_{n+1}^T \lt 0
+\end{cases}
+\end{equation}
+$$
+
+That is, proceeding from $n+2$ to $n+1$ with certainty yields the same payoff as proceeding from $n+1$ to $n$, less the cost $c_{n+1}$ of acquiring $V_{n+1}$. By induction on $m$, each $p_{n+m}^T$ is also constant; for $m \geq 2$:
+
+$$
+p_{n+m}^T = \begin{cases}
+p_{n+1}^T-\sum_{i=n+1}^{n+m-1} c_i & p_{n+1}^T \geq \sum_{i=n+1}^{n+m-2} c_i \\
+-c_{n+m-1} & p_{n+1}^T \lt \sum_{i=n+1}^{n+m-2} c_i 
+\end{cases}
+$$
+
+(For $m=2$ both sums become $c_{n+1}$ resp. $0$, recovering equation (5). At each step the high branch can itself be negative; once the cumulative cost catches up to $p_{n+1}^T$, the low branch takes over for all subsequent $m$.)
+
+**Remark (crystal ball prophecy).** If for some $n \gt 0$ $V_n=V_{n-1}=...=V_0$ we have
+
+$$
+\begin{equation}
+p_n^T(v_n) = \begin{cases}
+v_n-t-\sum_{i=0}^{n-1}c_i & v_n \gt t+\sum_{i=0}^{n-2}c_i \\
+-c_{n-1} & v_n \leq t+\sum_{i=0}^{n-2}c_i
+\end{cases}
+\end{equation}
+$$
+
+(with empty sum $\sum_{i=0}^{-1} c_i = 0$ for $n=1$). The case split happens where the predecessor $p_{n-1}^T$ crosses zero, not where $p_n^T$ does. So on the gap $(t+\sum_{i=0}^{n-2}c_i,\; t+\sum_{i=0}^{n-1}c_i]$ the high branch applies but yields a negative value: every step below $n$ would proceed, yet the cumulative cost still exceeds the payoff, so the Tarquinian policy declines at step $n$.
+
+**todo: generalize to complete information i.e. $v_0=g_n(v_n)$**
+
+**Proposition 5 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=({p_n^T}^{-1}(0), \infty)$.
+
+**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing it is injective, and the assumed zero is therefore unique, so $v^* \coloneqq {p_n^T}^{-1}(0)$ is well defined. From strict monotonicity, $v' \lt v^* \implies p_n^T(v') \lt 0 \implies v' \notin S_n$, while $v' \gt v^* \implies p_n^T(v') \gt 0 \implies v' \in S_n$. Since $p_n^T(v^*)=0$, $v^* \notin S_n$ either. So $S_n=(v^*, \infty)$, $v^* = \inf S_n$. □
+
+This sharpens the corollary (which only needs weak monotonicity): under strict monotonicity the threshold $v_n^*=\inf S_n$ is the unique root of $p_n^T$. The algorithm does not rely on it, since `_find_threshold` returns $\inf\{p_n^T \geq 0\}$ under weak monotonicity alone, and a flat zero region is payoff-indifferent.
+
+**todo: can we generalize this to broader p (nondecreasing with a unique zero)**
+
+**Remark (constrained VOI).** Given the ordering of $V$, a policy $r$, and fixing costs $c_{n-2},...,c_0$, the *value of information* $V_{n-1}$ is the expected payoff of the state in which the buyer has purchased that prophecy:
+
+$$
+\begin{equation}
+E(\pi_{n-1}|V_n=v_n) = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}, n \gt 0
+\end{equation}
+$$
+
+However, in general the VOI is simply the difference between the values of the purchased state and the next best alternative. For fixed $V$, the sole alternative is to exit, but if the buyer is allowed to skip $V_{n-1}$, there could be a better alternative, lowering the value of this prophecy. We will discuss this in more detail in a future section.
