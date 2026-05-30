@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tarquin"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Optimal information acquisition under sequential sufficiency (the Tarquin algorithm)."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,6 +37,9 @@ Repository = "https://github.com/tfisher010/tarquin"
 
 [tool.setuptools]
 py-modules = ["tarquin"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tarquin.__version__" }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
