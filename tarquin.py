@@ -1,4 +1,4 @@
-"""Tarquin Algorithm: Bayesian information acquisition under sequential sufficiency.
+"""Tarquin Algorithm: optimal information acquisition under sequential sufficiency.
 
 Implements Algorithm 1 (training) from README.md using a Gaussian mixture model
 for the joint density f(v_N, ..., v_0). A GMM makes the conditional densities
@@ -145,7 +145,7 @@ def _make_p_T(joint, p_prev, v_prev_star, c_prev):
 def infer_tarquin(v_star, v) -> np.ndarray:
     """Algorithm 2 (inference).
 
-    Walks from the highest-index prophecy down. Sets r_n = 1 while v_n >= v_n^*;
+    Walks from the highest-index prophecy down. Sets r_n = 1 while v_n > v_n^*;
     on the first failure, sets that r_n = 0 and leaves all lower-indexed (i.e.,
     later-step) decisions at 0, since the buyer has exited.
 
