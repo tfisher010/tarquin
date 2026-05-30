@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tarquin"
+version = "0.1.0"
+description = "Optimal information acquisition under sequential sufficiency (the Tarquin algorithm)."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Ted Fisher" }]
+keywords = [
+    "optimal-stopping",
+    "value-of-information",
+    "information-acquisition",
+    "snell-envelope",
+    "sequential-decision",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.21",
+    "scikit-learn>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+examples = ["matplotlib>=3.4"]
+
+[project.urls]
+Homepage = "https://github.com/tfisher010/tarquin"
+Repository = "https://github.com/tfisher010/tarquin"
+
+[tool.setuptools]
+py-modules = ["tarquin"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
