@@ -1,0 +1,11 @@
+*.ipynb
+__pycache__/
+
+# Python packaging / tooling
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.venv/
+venv/
