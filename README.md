@@ -114,10 +114,10 @@ $$
 $$
 \begin{aligned}
 p_n(v_n,r) &= E(\pi_{n-1}|V_n,r)-c_{n-1} \\
-&= E(r_{n-1}(V_{n-1})(\pi_{n-1}(V_{n-1},...,V_0)-c_{n-2})|V_n)-c_{n-1} \\
-&= E(E(r_{n-1}(V_{n-1})(\pi_{n-1}(V_{n-1},...,V_0)-c_{n-2})|V_n,V_{n-1})|V_n)-c_{n-1} \\
-&= E(E(r_{n-1}(V_{n-1})(\pi_{n-1}(V_{n-1},...,V_0)-c_{n-2})|V_{n-1})|V_n)-c_{n-1} \textrm{ (sufficiency)} \\
-&= E(r_{n-1}(V_{n-1})E(\pi_{n-1}(V_{n-1},...,V_0)-c_{n-2}|V_{n-1})|V_n)-c_{n-1} \\
+&= E(r_{n-1}(V_{n-1})(\pi_{n-2}(V_{n-2},...,V_0)-c_{n-2})|V_n)-c_{n-1} \\
+&= E(E(r_{n-1}(V_{n-1})(\pi_{n-2}(V_{n-2},...,V_0)-c_{n-2})|V_n,V_{n-1})|V_n)-c_{n-1} \\
+&= E(E(r_{n-1}(V_{n-1})(\pi_{n-2}(V_{n-2},...,V_0)-c_{n-2})|V_{n-1})|V_n)-c_{n-1} \textrm{ (sufficiency)} \\
+&= E(r_{n-1}(V_{n-1})E(\pi_{n-2}(V_{n-2},...,V_0)-c_{n-2}|V_{n-1})|V_n)-c_{n-1} \\
 &= E(r_{n-1}(V_{n-1})p_{n-1}(V_{n-1})|V_n)-c_{n-1}
 \end{aligned}
 $$
@@ -291,7 +291,7 @@ samples = rng.multivariate_normal(np.array([1, 0.5, -0.2]), np.array([
 c0, t = 0.1, 1
 
 pi_0 = np.maximum(samples[:,2] - t, 0)
-x_grid = np.linspace(2.58, 3.05, 100)
+x_grid = np.linspace(-0.1, 0.3, 100)
 mean_payoff = ((samples[:,1][None, :] > x_grid[:, None]) * (pi_0 - c0)[None, :]).mean(axis=1)
 
 plt.plot(x_grid, mean_payoff, label=r'$\bar{\pi}_1(v,r): r_1(v_1)=\mathbf{1}_{v_1>x}$')
@@ -387,7 +387,7 @@ Training (Algorithm 1) iterates $n=1,...,N$, building $p_n^T$ as a closure that 
 
 Inference (Algorithm 2) is a threshold walk from the top prophecy down, short-circuiting to zero on the first failure.
 
-Abridgements and rearrangements are handled uniformly: both reduce to selecting a column ordering (a subset and/or permutation) from the full joint GMM, marginalizing to those columns, and running the same training routine. An `enumerate_abridgements` helper yields the $2^{|\delta|-1}-1$ subsets that preserve $V_0$.
+Abridgements and rearrangements are handled uniformly: both reduce to selecting a column ordering (a subset and/or permutation) from the full joint GMM, marginalizing to those columns, and running the same training routine. An `enumerate_abridgements` helper yields the $2^{|\delta|-1}-2$ subsets that preserve $V_0$.
 
 The implementation reproduces the Gaussian example above to four decimal places ($v_1^* \approx 0.1204$, $v_2^* \approx 0.2886$).
 
