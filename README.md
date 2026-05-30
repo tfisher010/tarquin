@@ -1,7 +1,7 @@
-# Tarquin: Bayesian Information Acquisition under Sequential Sufficiency
+# Tarquin: Optimal Information Acquisition under Sequential Sufficiency
 It's said that a sibyl once offered a Roman king named Tarquinius nine books of prophecy at an exorbitant price. At the king's incredulous refusal, the sibyl burned three books and offered the remaining six at the same price. He again declined; she burned another three, and he, unnerved, procured the last three - the famed Sybilline Books - at her original price.
 
-Since ancient times, new information has altered our valuations of complex assets in counterintuitive ways. Paid information sources are the Sibylline Books of today's information-rich world; few are worth their price, and some can be deceptive. To help navigate this problem, we offer a Bayesian framework specialized for optimizing information acquisition decisions under a sufficiency condition, supporting an evenhanded consideration of noisy, incomplete, or oddly presented information.
+Since ancient times, new information has altered our valuations of complex assets in counterintuitive ways. Paid information sources are the Sibylline Books of today's information-rich world; few are worth their price, and some can be deceptive. To help navigate this problem, we offer a measure-theoretic framework for optimizing information acquisition decisions under a sufficiency condition, supporting an evenhanded consideration of noisy, incomplete, or oddly presented information.
 
 ## The Tarquin Game
 ### Setup
@@ -10,6 +10,8 @@ Consider a game between two players, a *vendor* and a *buyer*. The vendor is equ
 2. **(stochastic monotonicity)** $V_{n-1}\mid V_n=v_n$ is first-order stochastically increasing in $v_n$: $P(V_{n-1}>a\mid V_n=v_n)$ is weakly increasing in $v_n$ for every $a$. Equivalently, $E(g(V_{n-1})\mid V_n=v_n)$ is weakly increasing in $v_n$ for every weakly increasing $g$. This is strictly stronger than mean-monotonicity of $E(V_{n-1}\mid V_n=v_n)$, and the strength is needed to inductively propagate monotonicity of $p_n^T$ (Prop. 3 below). The Gaussian example used throughout satisfies it automatically; in general it is a property the buyer should verify when constructing $V$.
 
 A sequence of prophecies $V=\{V_i\}_{i \in \delta}$ is called a *book* with *index* $\delta$. A book with a singleton index is called *empty*. If for books $B_a,B_b$ we have $\delta_a \subsetneq \delta_b$, $V_0 \in \delta_a$, and $B_a$ is nonempty (i.e. $|\delta_a| \geq 2$), then $B_a$ is called an *abridgement* of $B_b$; a book with index $\delta$, $|\delta| \geq 2$, has $2^{|\delta|-1}-2$ abridgements. (The excluded singleton $\{V_0\}$ would correspond to seeing the payoff prophecy for free; this is an unphysical upper bound rather than a feasible policy in the original game.)
+
+Note that staying at the level of conditional expectations and Markov sufficiency, rather than adopting Bayesian machinery, keeps the framework agnostic about how the joint distribution over $V$ is produced (empirical, generative, or posterior-derived) and avoids committing to priors or likelihood factorizations the practitioner may not have. The structural assumption on $V$ remains cleanly separated from the decision rule, and the same algorithm covers settings ranging from population filtering against historical data to fully Bayesian belief updating.
 
 ### Gameplay
 At the outset the vendor, eager for business, provides the buyer with a large sample draw from $V$, allowing both to estimate the joint density $f(v_N,...,v_0)$ (which exists as all $V_n$ are measurable over $\mathbb{P}$).
