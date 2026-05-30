@@ -153,6 +153,20 @@ $$
 
 For instance, $p_1^T(v_1)=\int_t^\infty(v_0-t)f_{0|1}(v_0|v_1)dv_0-c_0$.
 
+**Remark (Snell envelope).** Since $S_{n-1}=\{p_{n-1}^T>0\}$, the integral above is the conditional expectation of the *positive part* of the next value:
+
+$$
+p_n^T(v_n) = E\big[(p_{n-1}^T(V_{n-1}))^+ \mid V_n=v_n\big] - c_{n-1}, \quad n>0,
+$$
+
+with $p_0^T(v_0)=v_0-t$. This is the backward induction of an optimal-stopping problem: $p_n^T$ is a Snell envelope, and "proceed iff $p_n^T>0$" (Prop. 2) is its optimal stopping rule. The first level is a call option on $V_0$ struck at $t$,
+
+$$
+p_1^T(v_1) = E\big[(V_0-t)^+ \mid V_1=v_1\big] - c_0,
+$$
+
+which under the Gaussian conditional below is exactly the **Bachelier (normal) call price** (the $(\mu-t)\Phi+\sigma\phi$ form derived in the Example). Naming the structure lets the method borrow the standard optimal-stopping toolbox: grid backward induction (used here), or least-squares Monte Carlo as a sampling-based alternative (see Future work).
+
 **Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then, writing $v_{n-1}^\ast=\inf S_{n-1}$ (the threshold from the corollary):
 
 $$
@@ -318,9 +332,9 @@ plt.show()
 2. Return $r \coloneqq r_N,...,r_0$
 
 ### Implementation
-We use a Gaussian mixture model (GMM) for the joint density $f(v_N,...,v_0)$, which gives analytical conditional densities at negligible cost: for each component, $f_{n-1|n}$ is Gaussian via the standard conditioning formula, and the mixture weights are rescaled by each component's marginal density at $v_n$. The number of components $k$ is left as a hyperparameter.
+By sufficiency the recursion only ever uses the $N$ adjacent-pair conditionals $f_{n-1|n}$, so we model each adjacent pair $(V_n,V_{n-1})$ with its own small 2-D Gaussian mixture (`fit_pairwise_gmms`). Each mixture gives analytic Gaussian conditionals: for component $k$, $f_{n-1|n}$ is Gaussian via the standard conditioning formula (mean affine in $v_n$, variance constant in $v_n$), and the mixture weights are rescaled by each component's marginal density at $v_n$. Fitting the pairs separately is lower-dimensional and more data-efficient than fitting the full $(N{+}1)$-variate joint and marginalizing; the method never needs the conditionals to be mutually consistent, only chained. (When a book's abridgements require conditionals for arbitrary adjacent pairs, `fit_joint_gmm` + `pairs_from_joint` recover them from a single joint fit.) The number of components $k$ per pair is a hyperparameter.
 
-Training (Algorithm 1) iterates $n=1,...,N$, building $p_n^T$ as a closure that integrates each component in standardized coordinates $z=(v_{n-1}-\mu_k)/\sigma_k$ so the density is always $\phi(z)$ regardless of where $v_n$ lands. We split the integration at $z=0$ so adaptive quadrature (`scipy.integrate.quad`) always samples the peak even when the lower bound is far in the tail. Thresholds $v_n^\ast$ are found via `scipy.optimize.brentq`, which is justified by Proposition 3 (monotonicity).
+Training (Algorithm 1) is backward value-function iteration on a grid. We carry $p_n^T$ as a table on a grid over $V_n$ and build the levels bottom-up: $p_0^T(v_0)=v_0-t$, then each $p_n^T$ is formed by integrating the positive part $(p_{n-1}^T)^+$ against the Gaussian conditional, evaluated at every grid point at once. The integral uses the trapezoidal rule against the Gaussian measure, which is robust to the kink of the positive part and vectorizes over the grid. The threshold $v_n^\ast$ is read off as the (interpolated) sign change of the tabulated $p_n^T$, valid because $p_n^T$ is monotone (Proposition 3). The cost is linear in $N$ levels, versus the exponential nesting incurred by evaluating the recursion pointwise, and it needs no closures, adaptive quadrature, or separate root-finder.
 
 Inference (Algorithm 2) is a threshold walk from the top prophecy down, short-circuiting to zero on the first failure.
 
@@ -410,3 +424,4 @@ However, in general the VOI is simply the difference between the values of the p
 - Replace the tightness parameter $t$ with an explicit budget constraint.
 - Generalize the crystal-ball case to complete information, $v_0=g_n(v_n)$.
 - Generalize Proposition 5 from strict monotonicity to any nondecreasing $p_n^T$ with a unique zero.
+- Estimate the value functions $p_n^T$ by backward regression directly on the vendor's sample (Longstaff-Schwartz least-squares Monte Carlo), skipping density estimation and quadrature entirely. Since each $p_n^T$ is a conditional expectation, this fits the structure exactly and scales to high $N$ and non-Gaussian data; using isotonic regression would bake in the monotonicity of Proposition 3 and hand back the threshold as a single sign crossing.
