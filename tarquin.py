@@ -43,6 +43,7 @@ __all__ = [
     "diagnose_sufficiency",
     "diagnose_fosd",
     "holdout_split",
+    "bootstrap_thresholds",
     "make_demo_data",
 ]
 
@@ -92,6 +93,28 @@ def _full_covariances(gmm: GaussianMixture) -> np.ndarray:
         out[:, di, di] = cov[:, None]
     else:
         raise ValueError(f"unknown covariance_type {ct!r}")
+    return out
+
+
+def _as_full_covariance(gmm: GaussianMixture) -> GaussianMixture:
+    """Return an equivalent GMM with covariance_type='full'.
+
+    The recursion (`_conditional_params`, `_col_span`) indexes `covariances_` as
+    (K, D, D), which only holds for a "full" fit. A pair fit with diag/tied/spherical
+    covariances would otherwise crash there; densify once at the source so every
+    downstream consumer sees the uniform (K, D, D) layout. A "full" GMM is returned
+    unchanged.
+    """
+    if getattr(gmm, "covariance_type", "full") == "full":
+        return gmm
+    covs = _full_covariances(gmm)
+    out = GaussianMixture(n_components=gmm.n_components, covariance_type="full")
+    out.weights_ = gmm.weights_.copy()
+    out.means_ = gmm.means_.copy()
+    out.covariances_ = covs
+    out.n_features_in_ = gmm.means_.shape[1]
+    chols = np.linalg.cholesky(covs)  # cov = L @ L.T; precision = U @ U.T, U = inv(L).T
+    out.precisions_cholesky_ = np.linalg.inv(chols).transpose(0, 2, 1)
     return out
 
 
@@ -176,6 +199,12 @@ def _build_grids(pairs: list[GaussianMixture], halfwidth: float, size: int) -> l
             spans.append(_col_span(pairs[m - 1], 0, halfwidth))  # V_m as conditioning col
         lo = min(s[0] for s in spans)
         hi = max(s[1] for s in spans)
+        if not hi > lo:
+            raise ValueError(
+                f"degenerate grid at level {m}: span [{lo:.4g}, {hi:.4g}] has zero width "
+                "(a collapsed marginal -> zero conditioning variance). Check the fitted "
+                "GMM / `reg_covar`; the trapezoidal step dx would be 0."
+            )
         grids.append(np.linspace(lo, hi, size))
     return grids
 
@@ -345,6 +374,10 @@ def train_tarquin(
             # of finite-sample non-monotonicity in p_n^T. With the default +-10*sigma grid
             # the captured mass is ~1 through the bulk, so this is a no-op there and on the
             # exact single-component Gaussian example (mass = 1 to ~23 digits).
+            # Caveat: renormalization rescales the *captured* mean, it does not recover the
+            # lost tail. Since (p_{n-1}^T)^+ is increasing, mass lost past the right edge
+            # is the high-value tail, so an extreme-v_n estimate is biased slightly low;
+            # widen `halfwidth` if thresholds sit near an edge (a warning fires when they do).
             mass = (w_mat @ tw) * dx  # int f_k over the grid (<= 1)
             integral[:, k] = np.divide(num, mass, out=np.zeros_like(num), where=mass > 0)
 
@@ -413,7 +446,9 @@ def _fit_one_gmm(X, n_components, random_state, covariance_type, **kwargs):
             **kwargs,
         ).fit(X)
         bic = g.bic(X)
-        if bic < best_bic:
+        # Keep the first fit as a fallback so a degenerate all-NaN BIC sweep (e.g. a
+        # collapsed component) still returns a usable model rather than None.
+        if best_gmm is None or bic < best_bic:
             best_gmm, best_bic = g, bic
     return best_gmm
 
@@ -437,15 +472,17 @@ def fit_pairwise_gmms(
     each pair's count independently by BIC. Pass extra sklearn `GaussianMixture` kwargs
     (notably `n_init` for multiple EM restarts, `reg_covar` to regularize covariances)
     via **kwargs to harden the fit against poor local optima / collapsed components.
+
+    Any `covariance_type` is accepted: a non-"full" fit is densified to the (K, D, D)
+    "full" layout the recursion indexes, so all four types feed `train_tarquin`.
     """
     data = np.asarray(data)
     N = data.shape[1] - 1
     pairs = []
     for n in range(1, N + 1):
         cols = [N - n, N - n + 1]  # (V_n, V_{n-1}) in README column order
-        pairs.append(
-            _fit_one_gmm(data[:, cols], n_components, random_state, covariance_type, **kwargs)
-        )
+        gmm = _fit_one_gmm(data[:, cols], n_components, random_state, covariance_type, **kwargs)
+        pairs.append(_as_full_covariance(gmm))
     return pairs
 
 
@@ -555,7 +592,7 @@ def make_demo_data(n: int = 2056, seed: int = 0) -> np.ndarray:
     z0 = 0.66 * z1 + np.sqrt(1 - 0.66**2) * rng.standard_normal(n)
     v2 = np.exp(4.38 + 0.40 * z2)                 # lognormal: mean ~85, skew ~1.1
     v1 = 68.0 + np.exp(3.30 + 0.90 * z1)          # floored, heavy right tail
-    v0 = 79.0 + 60.0 * z0 + 8.0 * np.expm1(0.6 * z0)  # strictly increasing, right-skewed, can be < 0
+    v0 = 79.0 + 60.0 * z0 + 8.0 * np.expm1(0.6 * z0)  # strictly increasing, right-skewed; can be <0
     return np.column_stack([v2, v1, v0])
 
 
@@ -605,6 +642,10 @@ def diagnose_sufficiency(data) -> dict:
     a large value is positive evidence *against* sufficiency. Pair it with
     `diagnose_fosd` and the training-time monotonicity warning for a fuller picture.
 
+    Rule of thumb: |partial_corr| < ~0.1 is reassuring; > ~0.2 is a concrete signal to
+    re-examine the ordering / construction of V (these are scale-free correlations, so
+    the cutoff is data-agnostic, unlike `diagnose_fosd`'s CDF-step magnitude).
+
     Returns dict with "partial_corr" (one entry per interior V_n, top-down) and "max_abs".
     """
     data = np.asarray(data, dtype=float)
@@ -633,6 +674,11 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
 
     A necessary, data-level check (the fit may smooth or worsen it). Combine with the
     training-time monotonicity warning, which acts on the *fitted* conditionals.
+
+    Rule of thumb: the violation is a probability-scale CDF step, so it is comparable
+    across datasets. < ~0.05-0.1 is consistent with FOSD up to binning/finite-sample
+    noise; a violation of several tenths (as the U-shaped non-FOSD fixture produces)
+    means the single-threshold rule is unreliable for that pair.
 
     Returns dict with "violation" (one per adjacent pair, README order (V_N,V_{N-1})..) and
     "max".
@@ -672,6 +718,84 @@ def holdout_split(data, test_frac: float = 0.3, seed: int = 0):
     perm = np.random.default_rng(seed).permutation(n)
     cut = int(round(n * (1.0 - test_frac)))
     return data[perm[:cut]], data[perm[cut:]]
+
+
+def bootstrap_thresholds(
+    data,
+    c,
+    t: float,
+    *,
+    n_boot: int = 200,
+    n_components=5,
+    ci: float = 0.95,
+    seed: int = 0,
+    fit_kwargs: dict | None = None,
+    **train_kwargs,
+) -> dict:
+    """Bootstrap confidence intervals for the thresholds v*.
+
+    The single `train_tarquin` point estimate hides the sampling/fit uncertainty in
+    v*. This resamples rows of `data` with replacement `n_boot` times; each replicate
+    refits the pairwise conditionals (`fit_pairwise_gmms`) and retrains, yielding a
+    bootstrap distribution of v*.
+
+    Columns of `data` must be in README order (V_N, ..., V_0). `c`/`t` are as in
+    `train_tarquin`. `n_components` and `fit_kwargs` (a dict of extra `GaussianMixture`
+    kwargs, e.g. `reg_covar`, `n_init`, `covariance_type`) control each replicate's
+    fit; remaining keyword args pass through to `train_tarquin` (`halfwidth`,
+    `grid_size`, `monotone`). Per-replicate warnings (saturation, monotonicity) are
+    suppressed -- the saturation shows up as ±inf in `samples` instead.
+
+    Cost note: each replicate is a full fit+train, so wall time is ~`n_boot` ×
+    `train_tarquin`; keep `n_components` scalar (not a BIC sweep) for speed.
+
+    Returns dict with:
+      "point"    : (N+1,) v* on the full sample.
+      "samples"  : (n_boot, N+1) bootstrap thresholds; a saturated endorsement set on a
+                   replicate appears as ±inf (rows in README order).
+      "mean"/"std": (N+1,) over the *finite* replicates per threshold (nan if none).
+      "ci_low"/"ci_high": (N+1,) percentile interval at level `ci`, computed over all
+                   replicates so a column that saturates often carries an honest ±inf tail.
+      "n_finite" : (N+1,) count of finite replicates per threshold.
+    """
+    if not 0.0 < ci < 1.0:
+        raise ValueError(f"ci must be in (0, 1); got {ci}")
+    data = np.asarray(data)
+    fit_kwargs = dict(fit_kwargs or {})
+    n = data.shape[0]
+    rng = np.random.default_rng(seed)
+
+    point, _ = train_tarquin(fit_pairwise_gmms(data, n_components, **fit_kwargs), c, t,
+                             **train_kwargs)
+
+    samples = np.empty((n_boot, point.size))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # saturation/monotonicity noise per replicate
+        for b in range(n_boot):
+            idx = rng.integers(0, n, size=n)
+            pairs = fit_pairwise_gmms(data[idx], n_components, **fit_kwargs)
+            samples[b], _ = train_tarquin(pairs, c, t, **train_kwargs)
+
+    finite = np.isfinite(samples)
+    n_finite = finite.sum(axis=0)
+    masked = np.where(finite, samples, np.nan)
+    lo_q, hi_q = 100.0 * (1.0 - ci) / 2.0, 100.0 * (1.0 + ci) / 2.0
+    with warnings.catch_warnings():
+        # all-inf column -> nan mean/std; inf-inf during percentile interpolation -> nan.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mean = np.nanmean(masked, axis=0)
+        std = np.nanstd(masked, axis=0)
+        ci_low = np.percentile(samples, lo_q, axis=0)
+        ci_high = np.percentile(samples, hi_q, axis=0)
+    return {
+        "point": point,
+        "samples": samples,
+        "mean": mean,
+        "std": std,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "n_finite": n_finite,
+    }
 
 
 if __name__ == "__main__":
@@ -730,3 +854,17 @@ if __name__ == "__main__":
     print(f"\nfit_pairwise_gmms on make_demo_data() (t={t_data:.1f}, c=100): "
           f"v* = {np.round(v_star_data, 2).tolist()}  "
           "(-inf=always proceed, +inf=never)")
+
+    # --- fit-on-train, score-on-holdout (avoids optimistic in-sample bias) ---
+    train, test = holdout_split(arr, test_frac=0.3, seed=0)
+    v_holdout, _ = train_tarquin(fit_pairwise_gmms(train, n_components=10), c_data, t_data)
+    cost_cols = np.array([np.nan, c_data[0], c_data[1]])
+    pi_test = evaluate_policy_mc(test, (0, 1, 2), v_holdout, cost_cols, t_data)
+    print(f"holdout E[pi] on {test.shape[0]} test rows: {pi_test.mean():+.3f}")
+
+    # --- bootstrap CIs for the thresholds (fit/sampling uncertainty) ---
+    boot = bootstrap_thresholds(arr, c_data, t_data, n_boot=50, n_components=10, seed=0)
+    for name, i in (("v_2*", 0), ("v_1*", 1)):
+        print(f"{name}: point {boot['point'][i]:.2f}, "
+              f"95% CI [{boot['ci_low'][i]:.2f}, {boot['ci_high'][i]:.2f}] "
+              f"({boot['n_finite'][i]}/50 finite)")
