@@ -22,7 +22,8 @@ def marginalize_gmm(gmm: GaussianMixture, dims) -> GaussianMixture:
     out.weights_ = gmm.weights_.copy()
     out.means_ = gmm.means_[:, dims]
     out.covariances_ = gmm.covariances_[:, dims[:, None], dims]
-    out.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(out.covariances_))
+    # precisions_cholesky_ is intentionally left unset: nothing here calls sklearn's
+    # scoring path; we integrate from means_/covariances_/weights_ directly.
     return out
 
 
@@ -52,7 +53,7 @@ def condition_gmm(gmm: GaussianMixture, cond_dim: int, cond_value: float) -> Gau
     out.weights_ = new_weights
     out.means_ = new_means
     out.covariances_ = new_covs
-    out.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(new_covs))
+    # precisions_cholesky_ intentionally unset (see marginalize_gmm).
     return out
 
 

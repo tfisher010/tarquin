@@ -1,11 +1,11 @@
 # Tarquin: Optimal Information Acquisition under Sequential Sufficiency
-It's said that a sibyl once offered a Roman king named Tarquinius nine books of prophecy at an exorbitant price. At the king's incredulous refusal, the sibyl burned three books and offered the remaining six at the same price. He again declined; she burned another three, and he, unnerved, procured the last three - the famed Sybilline Books - at her original price.
+It's said that a sibyl once offered a Roman king named Tarquinius nine books of prophecy at an exorbitant price. At the king's incredulous refusal, the sibyl burned three books and offered the remaining six at the same price. He again declined; she burned another three, and he, unnerved, procured the last three - the famed Sibylline Books - at her original price.
 
 Since ancient times, new information has altered our valuations of complex assets in counterintuitive ways. Paid information sources are the Sibylline Books of today's information-rich world; few are worth their price, and some can be deceptive. To help navigate this problem, we offer a measure-theoretic framework for optimizing information acquisition decisions under a sufficiency condition, supporting an evenhanded consideration of noisy, incomplete, or oddly presented information.
 
 ## The Tarquin Game
 ### Setup
-Consider a game between two players, a *vendor* and a *buyer*. The vendor is equipped with a sequence (**future work: continuous game**) of *prophecies* $V=V_N,...,V_0 \in L^1(\mathbb{P})$, that is, random variables defined on a single probability space and integrable with finite expectation and two additional properties:
+Consider a game between two players, a *vendor* and a *buyer*. The vendor is equipped with a sequence of *prophecies* $V=V_N,...,V_0 \in L^1(\mathbb{P})$, that is, random variables defined on a single probability space and integrable with finite expectation and two additional properties:
 1. **(sufficiency)** $V$ is ordered so that the conditional distribution of $V_{n-1}$ given $V_N,...,V_n$ depends only on $V_n$; equivalently, $V_N \to V_{N-1} \to \cdots \to V_0$ is a Markov chain. This may appear strong, but in practice the buyer can construct each $V_n$ as a posterior summary of $V_{n-1}$ given $V_N,...,V_n$ so the condition holds by construction.
 2. **(stochastic monotonicity)** $V_{n-1}\mid V_n=v_n$ is first-order stochastically increasing in $v_n$: $P(V_{n-1}>a\mid V_n=v_n)$ is weakly increasing in $v_n$ for every $a$. Equivalently, $E(g(V_{n-1})\mid V_n=v_n)$ is weakly increasing in $v_n$ for every weakly increasing $g$. This is strictly stronger than mean-monotonicity of $E(V_{n-1}\mid V_n=v_n)$, and the strength is needed to inductively propagate monotonicity of $p_n^T$ (Prop. 3 below). The Gaussian example used throughout satisfies it automatically; in general it is a property the buyer should verify when constructing $V$.
 
@@ -27,7 +27,7 @@ $$
 \end{equation}
 $$
 
-where $c_{-1}=0$ and tightness parameter $t$ represents the buyer's overhead (**future work: use budget constraint directly rather than $t$**). That is, at each step $n$, if the buyer decides to proceed ($r_n(v_n)=1$) they incur cost $c_{n-1}$ and receive the outcome of step $n-1$; otherwise, they exit the game and pay any cost already incurred. If the buyer arrives at step $n=0$ they receive the value $v_0$ of the final prophecy, less overhead $t$.
+where $c_{-1}=0$ and tightness parameter $t$ represents the buyer's overhead. That is, at each step $n$, if the buyer decides to proceed ($r_n(v_n)=1$) they incur cost $c_{n-1}$ and receive the outcome of step $n-1$; otherwise, they exit the game and pay any cost already incurred. If the buyer arrives at step $n=0$ they receive the value $v_0$ of the final prophecy, less overhead $t$.
 
 ### Tarquinian Policy
 A policy $r^T$ is *Tarquinian* if it satisfies
@@ -38,7 +38,7 @@ r^T_n=\text{arg max}_{r_n} E(\pi_n|V_n=v_n,r) \quad \forall n\in\{0,...,N\}
 \end{equation}
 $$
 
-The expectation conditions on $V_n=v_n$, the only information available to the buyer when setting $r_n$; conditioning on the full draw $V$ would make $\pi_n$ deterministic and the decision clairvoyant. Since each $\pi_n$ depends on the downstream decisions $r_{n-1},...,r_0$, (2) is a system whose nodewise optima are resolved together by the backward recursion below.
+The expectation conditions on $V_n=v_n$, the only information available to the buyer when setting $r_n$; conditioning on the full draw $V$ would make $\pi_n$ deterministic and the decision clairvoyant. Since each $\pi_n$ depends on the downstream decisions $r_{n-1},...,r_0$, the Tarquinian condition above is a system whose nodewise optima are resolved together by the backward recursion below.
 
 **Proposition 1 (end-state Tarquinian policy).** For any $V,c,t$, we have $r_0^T(v_0)=\mathbf{1}_{v_0>t}$.
 
@@ -83,7 +83,7 @@ r_n^T &= \text{arg max}_{r_n} E(\pi_n|V_n=v_n,r) \\
 \end{equation}
 $$
 
-Which is satisfied by $r_n^T=\mathbf{1}_{p_n^T(v_n)>0}$ by the same argument as was applied in (1) to $r_0^T$.
+Which is satisfied by $r_n^T=\mathbf{1}_{p_n^T(v_n)>0}$ by the same argument applied to $r_0^T$ in Proposition 1.
 
 **Proposition 3 (value of proceeding increasing in value signal).** $p_n^T$ is weakly increasing in $v_n$ for all $n$.
 
@@ -126,7 +126,7 @@ p_n(v_n,r) &= E(\pi_{n-1}|V_n,r)-c_{n-1} \\
 \end{aligned}
 $$
 
-By the conditional form of the "law of the unconcious statistician", for measurable $h$ we have
+By the conditional form of the "law of the unconscious statistician", for measurable $h$ we have
 
 $$
 E(h(x)|Y=y) = \int h(x)f_{X|Y}(x|y)dx
@@ -153,7 +153,7 @@ $$
 
 For instance, $p_1^T(v_1)=\int_t^\infty(v_0-t)f_{0|1}(v_0|v_1)dv_0-c_0$.
 
-**Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then **(need to explain $v^\ast$)**:
+**Remark (Gaussian case).** If $V \sim \mathcal{N}(\mu, \Sigma)$ then, writing $v_{n-1}^\ast=\inf S_{n-1}$ (the threshold from the corollary):
 
 $$
 p_n^T(v_n) = \frac{1}{\sigma_{n-1|n}}\int_{v_{n-1}^\ast}^\infty p_{n-1}^T(v_{n-1})\phi\left(\frac{v_{n-1}-\mu_{n-1|n}(v_n)}{\sigma_{n-1|n}}\right) dv_{n-1} - c_{n-1}
@@ -179,11 +179,15 @@ V_0
 0.3 & 1 & 0.5 \\
 0.15 & 0.5 & 2
 \end{pmatrix}\right), c=\begin{pmatrix}
-0 \\
+c_1 \\
+c_0
+\end{pmatrix}=\begin{pmatrix}
 0.05 \\
 0.1
 \end{pmatrix}, t=1
 $$
+
+Here $c=(c_1,c_0)\in\mathbb{R}^N$ with $N=2$: $c_1=0.05$ prices the acquisition of $V_1$ and $c_0=0.1$ that of $V_0$. The top prophecy $V_2$ is observed for free, so it carries no cost entry.
 
 Note that 
 
@@ -196,7 +200,7 @@ $$
 \end{pmatrix}
 $$
 
-So $V_2\perp V_0\mid V_1$. We have (confirm increasing)
+So $V_2\perp V_0\mid V_1$. We have
 
 $$
 \begin{aligned}
@@ -275,22 +279,22 @@ plt.show()
 
 ### Algorithm 1 (training)
 
-**Inputs:** Joint distribution $f(v_N,...,v_0)$, cost vector $c_N,...,c_0$, tightness parameter $t$.
+**Inputs:** Joint distribution $f(v_N,...,v_0)$, cost vector $c_{N-1},...,c_0$, tightness parameter $t$.
 
-**Output:** Tarquinian values $v^\ast\in\mathbb{R}^N$.
+**Output:** Tarquinian values $v^\ast\in\mathbb{R}^{N+1}$.
 
 1. For $n=1,...,N$:
 
-    a. Calculate the joint density of $V_{n-1},V_n$, $f_{n-1,n}(v_{n-1},v_n)=\int_\mathbb{R^{N-2}} f(v) \prod_{\substack{i=1 \ i \ne n-1,n}}^Ndv_i$
+    a. Calculate the joint density of $V_{n-1},V_n$, $f_{n-1,n}(v_{n-1},v_n)=\int_{\mathbb{R}^{N-1}} f(v) \prod_{\substack{i=0 \\ i \ne n-1,n}}^N dv_i$
 
-    b. Calculate the marginal of $V_n$, $f_n(v_n)=\int_\mathbb{R^{N-1}} f(v) \prod_{\substack{i=1 \ i \ne n}}^Ndv_i$
+    b. Calculate the marginal of $V_n$, $f_n(v_n)=\int_{\mathbb{R}^{N}} f(v) \prod_{\substack{i=0 \\ i \ne n}}^N dv_i$
 
     c. Calculate the conditional density of $V_{n-1}|V_n$, $f_{n-1|n}(v_{n-1}|v_n)=\frac{f_{n-1,n}(v_{n-1},v_n)}{f_n(v_n)}$
 
 2. Calculate $p_0^T(v_0) = v_0-t$
 3. For $n=1,...,N$:
 
-    a. Determine $v_{n-1}^\ast$ such that $v_{n-1}^\ast=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})=0\}$ (possibly using a root-finding algorithm)
+    a. Determine the threshold $v_{n-1}^\ast=\inf S_{n-1}=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})>0\}$ (under strict monotonicity this is the unique root of $p_{n-1}^T$, found via a root-finding algorithm; see Prop. 5)
 
     b. Calculate $p_n^T(v_n)=\int_{v_{n-1}^\ast}^\infty p_{n-1}^T(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}$
 
@@ -303,11 +307,13 @@ plt.show()
 
 **Outputs:** Boolean decision vector $r\in \{0, 1\}^{N+1}$.
 
-1. For $n=N,...,1$:
+1. For $n=N,...,0$:
 
     a. If $v_n \gt v_n^\ast$, set $r_n=1$.
 
     b. Otherwise, set $r_i=0 \; \forall i \leq n$ and break.
+
+    (The final step $n=0$ uses $v_0^\ast=t$, recovering $r_0=\mathbf{1}_{v_0>t}$ from Prop. 1.)
 
 2. Return $r \coloneqq r_N,...,r_0$
 
@@ -320,9 +326,9 @@ Inference (Algorithm 2) is a threshold walk from the top prophecy down, short-ci
 
 Abridgements and rearrangements are handled uniformly: both reduce to selecting a column ordering (a subset and/or permutation) from the full joint GMM, marginalizing to those columns, and running the same training routine. An `enumerate_abridgements` helper yields the $2^{|\delta|-1}-2$ subsets that preserve $V_0$.
 
-The implementation reproduces the Gaussian example above to four decimal places ($v_1^\ast \approx 0.1204$, $v_2^\ast \approx 0.2886$).
+In every book the top prophecy is observed for free (it is the buyer's starting signal), so its cost entry is unused. Consequently, comparing a book against its abridgements compares policies that see a *different* prophecy at no cost, not merely policies that carry less information; an abridgement can therefore outrank the full book when the prophecy it gets for free is the more valuable starting point. In the worked example the full book $(V_2,V_1,V_0)$ is in fact dominated by both two-prophecy abridgements.
 
-**(abridgements -> skip steps, trilogies -> rearrangements)**
+The implementation reproduces the Gaussian example above to four decimal places ($v_1^\ast \approx 0.1204$, $v_2^\ast \approx 0.2886$).
 
 ## Interpretation and special cases
 
@@ -363,7 +369,7 @@ p_{n+1}^T-\sum_{i=n+1}^{n+m-1} c_i & p_{n+1}^T \geq \sum_{i=n+1}^{n+m-2} c_i \\
 \end{cases}
 $$
 
-(For $m=2$ both sums become $c_{n+1}$ resp. $0$, recovering equation (5). At each step the high branch can itself be negative; once the cumulative cost catches up to $p_{n+1}^T$, the low branch takes over for all subsequent $m$.)
+(For $m=2$ both sums become $c_{n+1}$ resp. $0$, recovering the $p_{n+2}^T$ case above. At each step the high branch can itself be negative; once the cumulative cost catches up to $p_{n+1}^T$, the low branch takes over for all subsequent $m$.)
 
 The simplest instance is a single isolated prophecy, $V_1 \perp V_0$ with $V_0$ standard normal, where $p_1^T$ is the constant $\int_t^\infty (v_0-t)f_0(v_0)\,dv_0 - c_0 = \phi(t) - t(1-\Phi(t)) - c_0$. The buyer should proceed iff $c_0 \leq \phi(t)-t(1-\Phi(t))$; the figure below colors the empirical sign of $\bar p_1$ over $(t,c_0)$ against this analytic boundary.
 
@@ -382,15 +388,11 @@ $$
 
 (with empty sum $\sum_{i=0}^{-1} c_i = 0$ for $n=1$). The case split happens where the predecessor $p_{n-1}^T$ crosses zero, not where $p_n^T$ does. So on the gap $(t+\sum_{i=0}^{n-2}c_i,\; t+\sum_{i=0}^{n-1}c_i]$ the high branch applies but yields a negative value: every step below $n$ would proceed, yet the cumulative cost still exceeds the payoff, so the Tarquinian policy declines at step $n$.
 
-**todo: generalize to complete information i.e. $v_0=g_n(v_n)$**
-
 **Proposition 5 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=({p_n^T}^{-1}(0), \infty)$.
 
 **Proof.** Assume conditions. Since $p_n^T$ is strictly increasing it is injective, and the assumed zero is therefore unique, so $v^\ast \coloneqq {p_n^T}^{-1}(0)$ is well defined. From strict monotonicity, $v' \lt v^\ast \implies p_n^T(v') \lt 0 \implies v' \notin S_n$, while $v' \gt v^\ast \implies p_n^T(v') \gt 0 \implies v' \in S_n$. Since $p_n^T(v^\ast)=0$, $v^\ast \notin S_n$ either. So $S_n=(v^\ast, \infty)$, $v^\ast = \inf S_n$. □
 
 This sharpens the corollary (which only needs weak monotonicity): under strict monotonicity the threshold $v_n^\ast=\inf S_n$ is the unique root of $p_n^T$. The algorithm does not rely on it, since `_find_threshold` returns $\inf\{p_n^T \geq 0\}$ under weak monotonicity alone, and a flat zero region is payoff-indifferent.
-
-**todo: can we generalize this to broader p (nondecreasing with a unique zero)**
 
 **Remark (constrained VOI).** Given the ordering of $V$, a policy $r$, and fixing costs $c_{n-2},...,c_0$, the *value of information* $V_{n-1}$ is the expected payoff of the state in which the buyer has purchased that prophecy:
 
@@ -401,3 +403,10 @@ E(\pi_{n-1}|V_n=v_n) = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|
 $$
 
 However, in general the VOI is simply the difference between the values of the purchased state and the next best alternative. For fixed $V$, the sole alternative is to exit, but if the buyer is allowed to skip $V_{n-1}$, there could be a better alternative, lowering the value of this prophecy. We will discuss this in more detail in a future section.
+
+## Future work
+
+- Extend the discrete sequence of prophecies to a continuous game.
+- Replace the tightness parameter $t$ with an explicit budget constraint.
+- Generalize the crystal-ball case to complete information, $v_0=g_n(v_n)$.
+- Generalize Proposition 5 from strict monotonicity to any nondecreasing $p_n^T$ with a unique zero.
