@@ -6,10 +6,10 @@ Since ancient times, new information has altered our valuations of complex asset
 ## The Tarquin Game
 ### Setup
 Consider a game between two players, a *vendor* and a *buyer*. The vendor is equipped with a sequence (**future work: continuous game**) of *prophecies* $V=V_N,...,V_0 \in L^1(\mathbb{P})$, that is, random variables defined on a single probability space and integrable with finite expectation and two additional properties:
-1. **(sufficiency)** $V$ is ordered so that each prophecy $V_n$ is sufficient for the next prophecy $V_{n-1}$ with respect to all already-acquired prophecies $V_N,...,V_n$; that is, $E(V_{n-1}|V_n)=E(V_{n-1}|V_N,...,V_n)$. This may appear strong, but in practice merely requires the buyer to compute and set $E(V_{n-1}|V_N,...,V_n) \rightarrow V_n$.
-2. **(stochastic monotonicity)** $E(V_{n-1}|V_n=v_n)$ is weakly increasing. Similar to sufficiency, this is a practical constraint rather than a theoretical one (set $E(V_{n-1}|V_n) \rightarrow V_n$). This is stronger than $E(V_0|V_n=v_n)$ weakly increasing; the latter allows nonincreasing $E(V_{n-1}|V_n=v_n)$ if $\exists n': V_{n'} \perp V_0, 0 \lt n' \leq n-1$.
+1. **(sufficiency)** $V$ is ordered so that the conditional distribution of $V_{n-1}$ given $V_N,...,V_n$ depends only on $V_n$; equivalently, $V_N \to V_{N-1} \to \cdots \to V_0$ is a Markov chain. This may appear strong, but in practice the buyer can construct each $V_n$ as a posterior summary of $V_{n-1}$ given $V_N,...,V_n$ so the condition holds by construction.
+2. **(stochastic monotonicity)** $V_{n-1}\mid V_n=v_n$ is first-order stochastically increasing in $v_n$: $P(V_{n-1}>a\mid V_n=v_n)$ is weakly increasing in $v_n$ for every $a$. Equivalently, $E(g(V_{n-1})\mid V_n=v_n)$ is weakly increasing in $v_n$ for every weakly increasing $g$. This is strictly stronger than mean-monotonicity of $E(V_{n-1}\mid V_n=v_n)$, and the strength is needed to inductively propagate monotonicity of $p_n^T$ (Prop. 3 below). The Gaussian example used throughout satisfies it automatically; in general it is a property the buyer should verify when constructing $V$.
 
-A sequence of prophecies $V=\{V_i\}_{i \in \delta}$ is called a *book* with *index* $\delta$. A book with a singleton index is called *empty*. If for books $B_a,B_b$, $\delta_a \subset \delta_b$, $B_a$ is called an *abridgement* of $B_b$; a nonempty book with index $\delta$ has $2^{|\delta|-1}-1$ abridgements.
+A sequence of prophecies $V=\{V_i\}_{i \in \delta}$ is called a *book* with *index* $\delta$. A book with a singleton index is called *empty*. If for books $B_a,B_b$ we have $\delta_a \subsetneq \delta_b$, $V_0 \in \delta_a$, and $B_a$ is nonempty (i.e. $|\delta_a| \geq 2$), then $B_a$ is called an *abridgement* of $B_b$; a book with index $\delta$, $|\delta| \geq 2$, has $2^{|\delta|-1}-2$ abridgements. (The excluded singleton $\{V_0\}$ would correspond to seeing the payoff prophecy for free; this is an unphysical upper bound rather than a feasible policy in the original game.)
 
 ### Gameplay
 At the outset the vendor, eager for business, provides the buyer with a large sample draw from $V$, allowing both to estimate the joint density $f(v_N,...,v_0)$ (which exists as all $V_n$ are measurable over $\mathbb{P}$).
@@ -83,25 +83,18 @@ Which is satisfied by $r_n^T=\mathbf{1}_{p_n^T(v_n)>0}$ by the same argument as 
 
 **Proposition 3 (value of proceeding increasing in value signal).** $p_n^T$ is weakly increasing in $v_n$ for all $n$.
 
-**Proof.** (induction) This is evident for $n=0$; assume $p_{n-1}^T$ is weakly increasing in $v_{n-1}$.
-
-<!-- By definition $p_{n-1}^T(v_{n-1}) \geq 0 \forall v_{n-1} \in S_{n-1}$.  -->
-Since $p_{n-1}^T$ is increasing by hypothesis,
+**Proof.** (induction) This is evident for $n=0$; assume $p_{n-1}^T$ is weakly increasing in $v_{n-1}$. Define
 
 $$
-\exists x \in \mathbb{R}: \{p_{n-1}^T(v_{n-1})>0\}=[x,\infty)
+g(v_{n-1}) \coloneqq p_{n-1}^T(v_{n-1}) \cdot \mathbf{1}_{p_{n-1}^T(v_{n-1})>0}.
 $$
 
-Thus $\mathbf{1}_ {p_{n-1}^T(v_{n-1})>0}(V_{n-1})$ is also increasing, and so is the product
+If $\{p_{n-1}^T>0\}$ is empty, $g \equiv 0$, trivially nondecreasing. Otherwise, weak monotonicity of $p_{n-1}^T$ gives that $\{p_{n-1}^T>0\}=(x,\infty)$ or $[x,\infty)$ for some $x \in \mathbb{R}$, so the indicator $\mathbf{1}_ {p_{n-1}^T>0}$ is weakly increasing in $v_{n-1}$, and so is the product $g$.
+
+By stochastic monotonicity (FOSD), $E(g(V_{n-1})\mid V_n=v_n)$ is weakly increasing in $v_n$ for every weakly increasing $g$. Therefore
 
 $$
-g(V_{n-1})=p_{n-1}^T(V_{n-1})\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})
-$$
-
-In general, for $g$ increasing, $Y$ stochastically increasing in $X$, $E(g(Y)|X=x)$ is increasing. Therefore
-
-$$
-p_n^T(v_n)=E(p_{n-1}^T(V_{n-1})\mathbf{1}_{p_{n-1}^T(v_{n-1})>0}(V_{n-1})|V_n=v_n)
+p_n^T(v_n)=E\left(g(V_{n-1})\bigm| V_n=v_n\right)-c_{n-1}
 $$
 
 is non-decreasing. □
@@ -154,22 +147,22 @@ $$
 
 For instance, $p_1^T(v_1)=\int_t^\infty(v_0-t)f_{0|1}(v_0|v_1)dv_0-c_0$.
 
-**Remark (independence).** If for some $n$ $V_{n+1} \perp V_n$, stochastic monotonicity gives $V_{n'} \perp V_n, f_{n|{n'}}(v_n|v_{n'})=f_n(v_n) \forall n' \gt n$. $p_{n+1}^T(v_{n+1})$ is constant
+**Remark (independence).** If for some $n$, $V_{n+1} \perp V_n$, the Markov property (sufficiency) gives $V_{n'} \perp V_n$ and $f_{n|{n'}}(v_n|v_{n'})=f_n(v_n)$ for all $n' \gt n$. Then $p_{n+1}^T(v_{n+1})$ is constant:
 
 $$
-p_{n+1}^T(v_{n+1}) = p_{n+1}^T = \int_{S_n} p_n^T(v_n)f_n(v_n)-c_n
+p_{n+1}^T(v_{n+1}) = p_{n+1}^T = \int_{S_n} p_n^T(v_n)f_n(v_n)\,dv_n-c_n
 $$
 
-So
+so
 
 $$
 S_{n+1}=\begin{cases}
-\mathbb{R} & p_{n+1}^T \geq 0 \\
-\emptyset & p_{n+1}^T \lt 0
+\mathbb{R} & p_{n+1}^T \gt 0 \\
+\emptyset & p_{n+1}^T \leq 0
 \end{cases}
 $$
 
-And
+and
 
 $$
 \begin{equation}
@@ -180,27 +173,29 @@ p_{n+1}^T-c_{n+1} & p_{n+1}^T \geq 0 \\
 \end{equation}
 $$
 
-That is, proceeding from $n+2$ to $n+1$ with certainty yields the same payoff as proceeding from $n+1$ to $n$, less the cost of $n+1$. In fact, for $m \gt 1$:
+That is, proceeding from $n+2$ to $n+1$ with certainty yields the same payoff as proceeding from $n+1$ to $n$, less the cost $c_{n+1}$ of acquiring $V_{n+1}$. By induction on $m$, each $p_{n+m}^T$ is also constant; for $m \geq 2$:
 
 $$
-p_{n+m}^T(v_{n+m}) = \begin{cases}
-p_{n+1}^T-\sum_{i=n+2}^{n+m-1} c_i & p_{n+1}^T \geq \sum_{i=n+2}^{n+m-2} c_i \\
--c_{n+m-1} & p_{n+1}^T \lt \sum_{i=n+2}^{n+m-2} c_i 
+p_{n+m}^T = \begin{cases}
+p_{n+1}^T-\sum_{i=n+1}^{n+m-1} c_i & p_{n+1}^T \geq \sum_{i=n+1}^{n+m-2} c_i \\
+-c_{n+m-1} & p_{n+1}^T \lt \sum_{i=n+1}^{n+m-2} c_i 
 \end{cases}
 $$
+
+(For $m=2$ both sums become $c_{n+1}$ resp. $0$, recovering equation (5). At each step the high branch can itself be negative; once the cumulative cost catches up to $p_{n+1}^T$, the low branch takes over for all subsequent $m$.)
 
 **Remark (crystal ball prophecy).** If for some $n \gt 0$ $V_n=V_{n-1}=...=V_0$ we have
 
 $$
 \begin{equation}
 p_n^T(v_n) = \begin{cases}
-v_n-t-\sum_{i=0}^{n-1}c_i & v_n \geq t+\sum_{i=0}^{n-1}c_i \\
--c_{n-1} & v_n \lt t+\sum_{i=0}^{n-1}c_i
+v_n-t-\sum_{i=0}^{n-1}c_i & v_n \gt t+\sum_{i=0}^{n-2}c_i \\
+-c_{n-1} & v_n \leq t+\sum_{i=0}^{n-2}c_i
 \end{cases}
 \end{equation}
 $$
 
-That is, proceeding from $n$ to $n-1$ yields the known value of $v_0$, less all downstream and overhead costs.
+(with empty sum $\sum_{i=0}^{-1} c_i = 0$ for $n=1$). The case split happens where the predecessor $p_{n-1}^T$ crosses zero, not where $p_n^T$ does. So on the gap $(t+\sum_{i=0}^{n-2}c_i,\; t+\sum_{i=0}^{n-1}c_i]$ the high branch applies but yields a negative value: every step below $n$ would proceed, yet the cumulative cost still exceeds the payoff, so the Tarquinian policy declines at step $n$.
 
 **todo: generalize to complete information i.e. $v_0=g_n(v_n)$**
 
@@ -209,9 +204,9 @@ That is, proceeding from $n$ to $n-1$ yields the known value of $v_0$, less all 
 **Proof.** 
 Suppose $a \in S_n$ and take arbitrary $c \gt a$. Note that since $p_n^T$ is nondecreasing, $c \in S_n$. But for arbitrary $b \in (a,c)$, we have $b \gt a \implies b \in S_n$ for the same reason; thus, $S_n$ is an interval. By the same reasoning, $a \in S_n \implies 2a \in S_n$, thus $S_n$ is right-unbounded. □
 
-**Proposition 6 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=[{p_n^T}^{-1}(0), \infty)$.
+**Proposition 6 (set of signals endorsed by Tarquinian policy under strict monotonicity with zero).** If $p_n^T$ is strictly increasing and has a zero then $S_n=({p_n^T}^{-1}(0), \infty)$.
 
-**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing hence bijective, $v^* \coloneqq {p_n^T}^{-1}(0)$ exists and is unique. Since ${p_n^T}(v^\*)=0 \geq 0$, $v^\* \in S_n$, and from strict monontonicity for $v' \lt v$, we have $p_n^T(v') \lt 0 \implies v' \notin S_n$, so $v^* = \inf S = \min S$. Since $v^* \in S_n$, $S_n$ is nonempty and (by (4)) right-unbounded, hence $S_n=[{p_n^T}^{-1}(0), \infty)$. □
+**Proof.** Assume conditions. Since $p_n^T$ is strictly increasing hence bijective, $v^* \coloneqq {p_n^T}^{-1}(0)$ exists and is unique. From strict monotonicity, $v' \lt v^* \implies p_n^T(v') \lt 0 \implies v' \notin S_n$, while $v' \gt v^* \implies p_n^T(v') \gt 0 \implies v' \in S_n$. Since $p_n^T(v^*)=0$, $v^* \notin S_n$ either. So $S_n=(v^*, \infty)$, $v^* = \inf S_n$. □
 
 **todo: can we generalize this to broader p (nondecreasing with a unique zero)**
 
@@ -304,7 +299,7 @@ plt.legend()
 ```
 ![visual2](visual2.png)
 
-We do not analytically derive $p_2^T(v_2) = \int_{\frac{v_1^*-\mu_{1|2}(v_2)}{\sigma_{1|2}}}^\infty p_1^T(\mu_{1|2}(v_2)-z\sigma_{1|2})\phi(z)dz - c_1$, but we can numerically find and validate its root ($\approx 0.2886$):
+We do not analytically derive $p_2^T(v_2) = \int_{\frac{v_1^*-\mu_{1|2}(v_2)}{\sigma_{1|2}}}^\infty p_1^T(\mu_{1|2}(v_2)+z\sigma_{1|2})\phi(z)dz - c_1$, but we can numerically find and validate its root ($\approx 0.2886$):
 ```
 import numpy as np 
 from matplotlib import pyplot as plt
@@ -362,12 +357,12 @@ plt.show()
 2. Calculate $p_0^T(v_0) = v_0-t$
 3. For $n=1,...,N$:
 
-    a. Determine $v_{n-1}^\*$ such that $v_{n-1}^*=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})=0\}$ (possibly using a root-finding algorithm)
+    a. Determine $v_{n-1}^*$ such that $v_{n-1}^*=\inf \{v_{n-1}: p_{n-1}^T(v_{n-1})=0\}$ (possibly using a root-finding algorithm)
 
     b. Calculate $p_n^T(v_n)=\int_{v_{n-1}^*}^\infty p_{n-1}^T(v_{n-1})f_{n-1|n}(v_{n-1}|v_n)dv_{n-1}-c_{n-1}$
 
 4. Calculate $v_N^*$ as specified in 3a.
-5. Return $v^\* \coloneqq v_N^\*,...,v_0^\*$
+5. Return $v^* \coloneqq v_N^*,...,v_0^*$
 
 ### Algorithm 2 (inference)
 

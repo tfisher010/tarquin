@@ -166,7 +166,7 @@ def infer_tarquin(v_star, v) -> np.ndarray:
     assert v_star.shape == v.shape, f"shape mismatch: {v_star.shape} vs {v.shape}"
     r = np.zeros_like(v_star, dtype=int)
     for i in range(len(v)):
-        if v[i] >= v_star[i]:
+        if v[i] > v_star[i]:
             r[i] = 1
         else:
             break
@@ -235,18 +235,20 @@ def train_book(
 
 
 def enumerate_abridgements(col_order):
-    """Yield all abridgements of a book, as col_order tuples.
+    """Yield all (nonempty) abridgements of a book, as col_order tuples.
 
-    Per the README, a book with index set delta has 2^(|delta|-1) - 1
-    abridgements: the proper subsets of delta that still include V_0
-    (which sits at col_order[-1]). Original ordering is preserved within
-    each yielded tuple.
+    Per the README, a book with index set delta of size >= 2 has
+    2^(|delta|-1) - 2 abridgements: proper subsets of delta that include V_0
+    (the payoff prophecy at col_order[-1]) AND have size >= 2. The size-1
+    singleton {V_0} is excluded because it corresponds to seeing V_0 for
+    free -- an unphysical upper bound, not a feasible policy. Original
+    ordering is preserved within each yielded tuple.
     """
     from itertools import combinations
 
     head, tail = tuple(col_order[:-1]), col_order[-1]
     M = len(col_order)
-    for size in range(0, M - 1):
+    for size in range(1, M - 1):
         for combo in combinations(head, size):
             yield (*combo, tail)
 
@@ -273,7 +275,7 @@ def evaluate_policy_mc(
     alive = np.ones(samples.shape[0], dtype=bool)
     for i in range(M):
         col = col_order[i]
-        alive = alive & (samples[:, col] >= v_star[i])
+        alive = alive & (samples[:, col] > v_star[i])
         if i < M - 1:
             pi -= alive * cost_per_prophecy[col_order[i + 1]]
         else:
