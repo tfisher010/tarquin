@@ -310,6 +310,27 @@ def enumerate_abridgements(col_order):
             yield (*combo, tail)
 
 
+def make_demo_data(n: int = 2056, seed: int = 0) -> np.ndarray:
+    """Deterministic synthetic dataset for the demo (replaces the old test.csv).
+
+    A Markov chain V_2 -> V_1 -> V_0 -- so it satisfies the sufficiency
+    assumption by construction -- built from a latent standard-normal chain
+    pushed through monotone marginal transforms (monotone maps preserve the
+    Markov property). The result has positive, right-skewed V_2 and V_1 on an
+    O(100) scale (V_1 floored near 68) and a wider V_0 that can go negative,
+    with adjacent correlations ~0.34 / ~0.60. Columns are in README order
+    (V_2, V_1, V_0). Same scale/shape as the retired test.csv, not its exact rows.
+    """
+    rng = np.random.default_rng(seed)
+    z2 = rng.standard_normal(n)
+    z1 = 0.42 * z2 + np.sqrt(1 - 0.42**2) * rng.standard_normal(n)
+    z0 = 0.66 * z1 + np.sqrt(1 - 0.66**2) * rng.standard_normal(n)
+    v2 = np.exp(4.38 + 0.40 * z2)                 # lognormal: mean ~85, skew ~1.1
+    v1 = 68.0 + np.exp(3.30 + 0.90 * z1)          # floored, heavy right tail
+    v0 = 79.0 + 66.0 * z0 + 10.0 * (z0**2 - 1.0)  # wider, right-skewed, can be < 0
+    return np.column_stack([v2, v1, v0])
+
+
 def evaluate_policy_mc(
     samples,
     col_order,
@@ -385,18 +406,14 @@ if __name__ == "__main__":
     for mean_pi, book, v_ab in sorted(results, reverse=True):
         print(f"  cols {book}  v*={np.round(v_ab, 3).tolist()}  E[pi]={mean_pi:+.4f}")
 
-    # --- fit_pairwise_gmms smoke test on test.csv, if present ---
-    from pathlib import Path
-    csv = Path(__file__).with_name("test.csv")
-    if csv.exists():
-        # Columns expected: index, v2, v1, v0 (v2 = V_N, v0 = payoff prophecy).
-        # Costs/overhead are scaled to this data (V_0 ~ O(100)); with the example's
-        # tiny c/t the policy would just "always proceed" (threshold at the grid floor).
-        arr = np.genfromtxt(csv, delimiter=",", skip_header=1)[:, 1:]
-        data_pairs = fit_pairwise_gmms(arr, n_components=10)
-        t_data = float(np.median(arr[:, 2]))
-        c_data = np.array([100.0, 100.0])
-        v_star_data, _ = train_tarquin(data_pairs, c_data, t_data)
-        print(f"\nfit_pairwise_gmms on {csv.name} (t={t_data:.1f}, c=100): "
-              f"v* = {np.round(v_star_data, 2).tolist()}  "
-              "(-inf=always proceed, +inf=never)")
+    # --- fit_pairwise_gmms smoke test on deterministic synthetic data ---
+    arr = make_demo_data()
+    data_pairs = fit_pairwise_gmms(arr, n_components=10)
+    # Costs/overhead are scaled to this data (V_0 ~ O(100)); with the example's
+    # tiny c/t the policy would just "always proceed" (threshold at the grid floor).
+    t_data = float(np.median(arr[:, 2]))
+    c_data = np.array([100.0, 100.0])
+    v_star_data, _ = train_tarquin(data_pairs, c_data, t_data)
+    print(f"\nfit_pairwise_gmms on make_demo_data() (t={t_data:.1f}, c=100): "
+          f"v* = {np.round(v_star_data, 2).tolist()}  "
+          "(-inf=always proceed, +inf=never)")
