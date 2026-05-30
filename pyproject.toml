@@ -9,6 +9,7 @@ description = "Optimal information acquisition under sequential sufficiency (the
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Ted Fisher" }]
+license = { text = "MIT" }
 keywords = [
     "optimal-stopping",
     "value-of-information",
@@ -17,6 +18,7 @@ keywords = [
     "sequential-decision",
 ]
 classifiers = [
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Mathematics",
@@ -28,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "ruff>=0.4"]
 examples = ["matplotlib>=3.4"]
 
 [project.urls]
@@ -44,3 +46,12 @@ version = { attr = "tarquin.__version__" }
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# Conservative, bug-catching set: pyflakes (F) + pycodestyle errors (E). These flag
+# real defects (undefined names, unused imports, syntax) without enforcing style churn.
+select = ["E", "F"]
