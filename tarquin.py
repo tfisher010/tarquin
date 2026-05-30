@@ -21,9 +21,11 @@ Two structural facts drive the implementation:
 """
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import numpy as np
+from sklearn.isotonic import isotonic_regression
 from sklearn.mixture import GaussianMixture
 
 __version__ = "0.1.0"
@@ -50,15 +52,35 @@ def _gauss_pdf(x, loc, scale):
     return _INV_SQRT_2PI / scale * np.exp(-0.5 * z * z)
 
 
+def _trapz_weights(n: int) -> np.ndarray:
+    """Trapezoidal-rule weights on a uniform grid of `n` points (endpoints halved)."""
+    w = np.ones(n)
+    if n >= 2:
+        w[0] = w[-1] = 0.5
+    return w
+
+
+def _mono_tol(p: np.ndarray) -> float:
+    """Tolerance below which a downward step in p counts as numerical noise, not a
+    genuine monotonicity violation. Scaled to the value function's range."""
+    return 1e-7 * max(1.0, float(np.ptp(p)))
+
+
 def marginalize_gmm(gmm: GaussianMixture, dims) -> GaussianMixture:
     """Marginalize a joint GMM over selected dimensions."""
     dims = np.asarray(dims)
     out = GaussianMixture(n_components=gmm.n_components, covariance_type="full")
     out.weights_ = gmm.weights_.copy()
     out.means_ = gmm.means_[:, dims]
-    out.covariances_ = gmm.covariances_[:, dims[:, None], dims]
-    # precisions_cholesky_ is intentionally left unset: nothing here calls sklearn's
-    # scoring path; we read means_/covariances_/weights_ directly.
+    covs = gmm.covariances_[:, dims[:, None], dims]
+    out.covariances_ = covs
+    out.n_features_in_ = len(dims)
+    # Compute precisions_cholesky_ so the marginal GMM is fully usable (e.g. .sample,
+    # .score), matching sklearn's "full"-covariance convention precision = U @ U.T with
+    # U = inv(L).T and cov = L @ L.T. The recursion here reads means_/covariances_/
+    # weights_ directly, but a marginal that silently breaks scoring is a footgun.
+    chols = np.linalg.cholesky(covs)  # lower L per component, cov = L @ L.T
+    out.precisions_cholesky_ = np.linalg.inv(chols).transpose(0, 2, 1)
     return out
 
 
@@ -82,17 +104,88 @@ def _conditional_params(pair: GaussianMixture, v_grid: np.ndarray):
 
     comp_pdf = _gauss_pdf(v_grid[:, None], mu_c[None, :], np.sqrt(S_cc)[None, :])
     weights = pair.weights_[None, :] * comp_pdf
-    weights = weights / weights.sum(axis=1, keepdims=True)
+    # Guard the normalization: at grid points in the far tail of every component the
+    # densities can all underflow to 0. Leave those rows at 0 (no conditional mass ->
+    # the integral contributes nothing, so p_n there is just -c) rather than 0/0 -> NaN.
+    wsum = weights.sum(axis=1, keepdims=True)
+    weights = np.divide(weights, wsum, out=np.zeros_like(weights), where=wsum > 0)
     return weights, means, sigmas
 
 
-def _marginal_grid(gmm: GaussianMixture, col: int, halfwidth: float, size: int) -> np.ndarray:
-    """Grid over the marginal of one column, covering every component's bulk."""
+def _col_span(gmm: GaussianMixture, col: int, halfwidth: float) -> tuple[float, float]:
+    """[lo, hi] covering every component's bulk for one column's marginal."""
     mu = gmm.means_[:, col]
     sigma = np.sqrt(gmm.covariances_[:, col, col])
-    lo = float((mu - halfwidth * sigma).min())
-    hi = float((mu + halfwidth * sigma).max())
-    return np.linspace(lo, hi, size)
+    return float((mu - halfwidth * sigma).min()), float((mu + halfwidth * sigma).max())
+
+
+def _build_grids(pairs: list[GaussianMixture], halfwidth: float, size: int) -> list[np.ndarray]:
+    """One grid per level 0..N over V_0..V_N.
+
+    Each V_n appears in up to two adjacent pairs -- as the conditioning column
+    (col 0 of pairs[n-1]) and as the conditioned column (col 1 of pairs[n]). When
+    the pairs are fit independently (`fit_pairwise_gmms`) those two views of V_n's
+    marginal can differ; the level-n grid spans the union of both so the conditional
+    integrated at step n+1 is not silently truncated by a grid built from the other
+    fit. For pairs extracted from a single joint (`pairs_from_joint`) the two views
+    agree and the union is a no-op.
+    """
+    N = len(pairs)
+    grids = []
+    for m in range(N + 1):
+        spans = []
+        if m <= N - 1:
+            spans.append(_col_span(pairs[m], 1, halfwidth))      # V_m as conditioned col
+        if m >= 1:
+            spans.append(_col_span(pairs[m - 1], 0, halfwidth))  # V_m as conditioning col
+        lo = min(s[0] for s in spans)
+        hi = max(s[1] for s in spans)
+        grids.append(np.linspace(lo, hi, size))
+    return grids
+
+
+def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.ndarray:
+    """Detect / handle a non-nondecreasing value function (Prop. 3 should guarantee it).
+
+    `p_n^T` is nondecreasing only under stochastic monotonicity (FOSD) of the
+    conditionals. A fitted GMM does not enforce FOSD, so a violation signals that
+    the modeled conditionals break the assumption -- in which case the endorsement
+    set need not be an interval and the single-threshold rule is unreliable.
+    `mode` is one of "check" (warn), "raise", "project" (isotonic-project onto the
+    monotone cone and warn), or "off".
+    """
+    if mode == "off":
+        return p
+    diffs = np.diff(p)
+    worst = float(diffs.min()) if diffs.size else 0.0
+    if worst >= -tol:
+        return p  # nondecreasing up to numerical noise
+    msg = (
+        f"p_{level}^T is not nondecreasing (min step {worst:.3g} < -{tol:.1g}); the "
+        "stochastic-monotonicity (FOSD) assumption (Prop. 3) appears violated by the "
+        "fitted conditionals, so the single-threshold rule may be invalid."
+    )
+    if mode == "raise":
+        raise ValueError(msg)
+    if mode == "project":
+        warnings.warn(msg + " Projecting onto the monotone cone (isotonic).", stacklevel=3)
+        return isotonic_regression(p)
+    warnings.warn(msg, stacklevel=3)  # mode == "check"
+    return p
+
+
+def _warn_if_near_edge(v: float, grid: np.ndarray, level: int) -> None:
+    """Warn when a finite threshold lands within 0.1% of a grid edge (grid too narrow)."""
+    if not np.isfinite(v):
+        return
+    span = grid[-1] - grid[0]
+    if v <= grid[0] + 1e-3 * span or v >= grid[-1] - 1e-3 * span:
+        warnings.warn(
+            f"v_{level}^* = {v:.4g} sits within 0.1% of a grid edge "
+            f"[{grid[0]:.4g}, {grid[-1]:.4g}]; widen `halfwidth` or raise `grid_size` "
+            "for a reliable threshold.",
+            stacklevel=3,
+        )
 
 
 def _threshold_from_grid(grid: np.ndarray, p: np.ndarray) -> float:
@@ -117,6 +210,7 @@ def train_tarquin(
     *,
     halfwidth: float = 10.0,
     grid_size: int = 3000,
+    monotone: Literal["project", "check", "raise", "off"] = "project",
 ) -> tuple[np.ndarray, dict]:
     """Algorithm 1 (training) by backward value-function iteration on a grid.
 
@@ -129,11 +223,22 @@ def train_tarquin(
         Build these with `fit_pairwise_gmms` (from data) or `pairs_from_joint`.
     c : array of length N
         Cost vector in README order (c_{N-1}, ..., c_0); c_{n-1} is the cost of
-        acquiring V_{n-1} at step n.
+        acquiring V_{n-1} at step n. Must be nonnegative.
     t : float
         Tightness / overhead parameter.
     halfwidth, grid_size : grid covers each marginal's mean +- halfwidth*std with
-        `grid_size` points. Widen/refine if thresholds sit near a grid edge.
+        `grid_size` points. Widen/refine if thresholds sit near a grid edge (a
+        warning is emitted when they do).
+    monotone : how to handle a value function p_n^T that fails to be nondecreasing.
+        Prop. 3 guarantees monotonicity only under stochastic monotonicity (FOSD),
+        which a fitted GMM does not enforce; even on FOSD-true data, finite-sample
+        GMM wiggle breaks monotonicity of the estimated p_n^T, so a violation is
+        common in practice and means the bare single-threshold rule may be invalid.
+        "project" (default) isotonic-projects p_n^T onto the monotone cone -- the
+        right estimator since Prop. 3 says the true p_n^T is monotone -- and warns
+        when it acts; "check" warns only; "raise" errors; "off" disables the check.
+        All four agree on the exact single-component Gaussian case (already monotone,
+        so projection is a no-op there).
 
     Returns
     -------
@@ -145,26 +250,28 @@ def train_tarquin(
     """
     N = len(pairs)
     c = np.asarray(c, dtype=float)
-    assert c.shape == (N,), f"expected c of length {N}, got {c.shape}"
+    if c.shape != (N,):
+        raise ValueError(f"expected c of length {N}, got shape {c.shape}")
+    if np.any(c < 0):
+        raise ValueError(f"cost vector must be nonnegative (README: c in R^N_>=0); got {c}")
 
-    # Grids: level 0 over V_0 (column 1 of pairs[0]); level n over V_n (column 0 of pairs[n-1]).
-    grids = [_marginal_grid(pairs[0], 1, halfwidth, grid_size)]
-    for n in range(1, N + 1):
-        grids.append(_marginal_grid(pairs[n - 1], 0, halfwidth, grid_size))
+    grids = _build_grids(pairs, halfwidth, grid_size)
 
-    # p_0^T(v_0) = v_0 - t.
-    p = [grids[0] - t]
-    v_star_asc = [_threshold_from_grid(grids[0], p[0])]  # = t
+    # p_0^T(v_0) = v_0 - t (monotone by construction; the call is a no-op here).
+    p0 = _enforce_monotone(grids[0] - t, 0, monotone, _mono_tol(grids[0] - t))
+    p = [p0]
+    v_star_asc = [_threshold_from_grid(grids[0], p0)]  # = t
 
     for n in range(1, N + 1):
         pair = pairs[n - 1]
         g_n, g_prev = grids[n], grids[n - 1]
         weights, means, sigmas = _conditional_params(pair, g_n)  # (G,K),(G,K),(K,)
 
-        # Integrate (p_{n-1}^T)^+ against each conditional component by trapezoid
-        # against the Gaussian measure on the previous level's grid. Robust to the
-        # kink of the positive part, and vectorized over the current grid.
-        p_prev_pos = np.maximum(p[n - 1], 0.0)
+        # Integrate (p_{n-1}^T)^+ against each conditional component by the trapezoidal
+        # rule against the Gaussian measure on the previous level's grid (endpoints
+        # half-weighted). Robust to the kink of the positive part, vectorized over the
+        # current grid.
+        p_prev_pos = np.maximum(p[n - 1], 0.0) * _trapz_weights(g_prev.size)
         dx = g_prev[1] - g_prev[0]
         integral = np.empty_like(means)  # (G, K)
         for k in range(pair.n_components):
@@ -173,8 +280,11 @@ def train_tarquin(
 
         c_prev = float(c[N - n])  # README-indexed c_{n-1}
         p_n = (weights * integral).sum(axis=1) - c_prev
+        p_n = _enforce_monotone(p_n, n, monotone, _mono_tol(p_n))
         p.append(p_n)
-        v_star_asc.append(_threshold_from_grid(g_n, p_n))
+        v_n = _threshold_from_grid(g_n, p_n)
+        _warn_if_near_edge(v_n, g_n, n)
+        v_star_asc.append(v_n)
 
     return np.array(v_star_asc[::-1]), {"grids": grids, "p": p}
 
@@ -200,7 +310,8 @@ def infer_tarquin(v_star, v) -> np.ndarray:
     """
     v_star = np.asarray(v_star, dtype=float)
     v = np.asarray(v, dtype=float)
-    assert v_star.shape == v.shape, f"shape mismatch: {v_star.shape} vs {v.shape}"
+    if v_star.shape != v.shape:
+        raise ValueError(f"shape mismatch: v_star {v_star.shape} vs v {v.shape}")
     r = np.zeros_like(v_star, dtype=int)
     for i in range(len(v)):
         if v[i] > v_star[i]:
@@ -330,11 +441,12 @@ def make_demo_data(n: int = 2056, seed: int = 0) -> np.ndarray:
 
     A Markov chain V_2 -> V_1 -> V_0 -- so it satisfies the sufficiency
     assumption by construction -- built from a latent standard-normal chain
-    pushed through monotone marginal transforms (monotone maps preserve the
-    Markov property). The result has positive, right-skewed V_2 and V_1 on an
-    O(100) scale (V_1 floored near 68) and a wider V_0 that can go negative,
-    with adjacent correlations ~0.34 / ~0.60. Columns are in README order
-    (V_2, V_1, V_0). Same scale/shape as the retired test.csv, not its exact rows.
+    pushed through strictly increasing marginal transforms. Monotone maps preserve
+    both the Markov property and stochastic monotonicity (FOSD), so the data also
+    satisfies assumption 2; the worked recursion is therefore well posed on it. The
+    result has positive, right-skewed V_2 and V_1 on an O(100) scale (V_1 floored
+    near 68) and a wider, right-skewed V_0 that can go negative, with adjacent
+    correlations ~0.34 / ~0.55. Columns are in README order (V_2, V_1, V_0).
     """
     rng = np.random.default_rng(seed)
     z2 = rng.standard_normal(n)
@@ -342,7 +454,7 @@ def make_demo_data(n: int = 2056, seed: int = 0) -> np.ndarray:
     z0 = 0.66 * z1 + np.sqrt(1 - 0.66**2) * rng.standard_normal(n)
     v2 = np.exp(4.38 + 0.40 * z2)                 # lognormal: mean ~85, skew ~1.1
     v1 = 68.0 + np.exp(3.30 + 0.90 * z1)          # floored, heavy right tail
-    v0 = 79.0 + 66.0 * z0 + 10.0 * (z0**2 - 1.0)  # wider, right-skewed, can be < 0
+    v0 = 79.0 + 60.0 * z0 + 8.0 * np.expm1(0.6 * z0)  # strictly increasing, right-skewed, can be < 0
     return np.column_stack([v2, v1, v0])
 
 
