@@ -40,6 +40,9 @@ __all__ = [
     "train_book",
     "enumerate_abridgements",
     "evaluate_policy_mc",
+    "diagnose_sufficiency",
+    "diagnose_fosd",
+    "holdout_split",
     "make_demo_data",
 ]
 
@@ -66,13 +69,39 @@ def _mono_tol(p: np.ndarray) -> float:
     return 1e-7 * max(1.0, float(np.ptp(p)))
 
 
+def _full_covariances(gmm: GaussianMixture) -> np.ndarray:
+    """Per-component full (K, D, D) covariances, whatever the fitted covariance_type.
+
+    sklearn stores `covariances_` in four shapes (full: (K,D,D); tied: (D,D); diag:
+    (K,D); spherical: (K,)). `marginalize_gmm` slices a (D,D) block per component, so we
+    expand to full first -- otherwise a non-"full" joint silently breaks marginalization.
+    """
+    cov = np.asarray(gmm.covariances_)
+    K = gmm.n_components
+    D = gmm.means_.shape[1]
+    ct = getattr(gmm, "covariance_type", "full")
+    if ct == "full":
+        return cov
+    if ct == "tied":
+        return np.broadcast_to(cov, (K, D, D)).copy()
+    di = np.arange(D)
+    out = np.zeros((K, D, D))
+    if ct == "diag":
+        out[:, di, di] = cov
+    elif ct == "spherical":
+        out[:, di, di] = cov[:, None]
+    else:
+        raise ValueError(f"unknown covariance_type {ct!r}")
+    return out
+
+
 def marginalize_gmm(gmm: GaussianMixture, dims) -> GaussianMixture:
-    """Marginalize a joint GMM over selected dimensions."""
+    """Marginalize a joint GMM over selected dimensions (any covariance_type)."""
     dims = np.asarray(dims)
     out = GaussianMixture(n_components=gmm.n_components, covariance_type="full")
     out.weights_ = gmm.weights_.copy()
     out.means_ = gmm.means_[:, dims]
-    covs = gmm.covariances_[:, dims[:, None], dims]
+    covs = _full_covariances(gmm)[:, dims[:, None], dims]
     out.covariances_ = covs
     out.n_features_in_ = len(dims)
     # Compute precisions_cholesky_ so the marginal GMM is fully usable (e.g. .sample,
@@ -95,11 +124,18 @@ def _conditional_params(pair: GaussianMixture, v_grid: np.ndarray):
     """
     mu_c = pair.means_[:, 0]
     mu_o = pair.means_[:, 1]
-    S_cc = pair.covariances_[:, 0, 0]
+    # Floor the conditioning variance a hair above 0 so a (near-)degenerate GMM
+    # component cannot divide by zero in the regression coefficient / conditional pdf.
+    # sklearn's reg_covar keeps fitted components PD, so this is a no-op in practice.
+    S_cc = np.maximum(pair.covariances_[:, 0, 0], np.finfo(float).tiny)
     S_oo = pair.covariances_[:, 1, 1]
     S_oc = pair.covariances_[:, 0, 1]
 
-    sigmas = np.sqrt(S_oo - S_oc**2 / S_cc)  # conditional std, constant in v
+    # Conditional variance, likewise floored: a collapsed component (S_oo*S_cc ~ S_oc^2)
+    # then yields a sharp-but-finite density instead of a sqrt-of-negative NaN that would
+    # poison the whole recursion.
+    cond_var = np.maximum(S_oo - S_oc**2 / S_cc, np.finfo(float).tiny)
+    sigmas = np.sqrt(cond_var)  # conditional std, constant in v
     means = mu_o[None, :] + (S_oc / S_cc)[None, :] * (v_grid[:, None] - mu_c[None, :])
 
     comp_pdf = _gauss_pdf(v_grid[:, None], mu_c[None, :], np.sqrt(S_cc)[None, :])
@@ -160,10 +196,21 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
     worst = float(diffs.min()) if diffs.size else 0.0
     if worst >= -tol:
         return p  # nondecreasing up to numerical noise
+    n_viol = int((diffs < -tol).sum())
+    rel = -worst / max(1.0, float(np.ptp(p)))  # worst dip as a fraction of the value range
+    severity = (
+        "consistent with finite-sample GMM wiggle (projection recovers the monotone "
+        "estimator)"
+        if rel < 1e-2
+        else "large relative to the value range, suggesting a genuine FOSD violation in "
+        "the modeled conditionals; then S_n need not be an interval and the "
+        "single-threshold rule may be unreliable even after projection"
+    )
     msg = (
-        f"p_{level}^T is not nondecreasing (min step {worst:.3g} < -{tol:.1g}); the "
-        "stochastic-monotonicity (FOSD) assumption (Prop. 3) appears violated by the "
-        "fitted conditionals, so the single-threshold rule may be invalid."
+        f"p_{level}^T is not nondecreasing (min step {worst:.3g} < -{tol:.1g}, "
+        f"{n_viol} violating point(s), rel. magnitude {rel:.2g}); this is {severity}. "
+        "The stochastic-monotonicity (FOSD) assumption (Prop. 3) appears violated by the "
+        "fitted conditionals."
     )
     if mode == "raise":
         raise ValueError(msg)
@@ -175,7 +222,16 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
 
 
 def _warn_if_near_edge(v: float, grid: np.ndarray, level: int) -> None:
-    """Warn when a finite threshold lands within 0.1% of a grid edge (grid too narrow)."""
+    """Warn when a threshold is unresolved within the grid: a finite value within 0.1%
+    of an edge, or a low-saturated -inf (p_n^T >= 0 already at the grid floor)."""
+    if v == -np.inf:
+        warnings.warn(
+            f"v_{level}^* saturated to -inf: p_{level}^T >= 0 at the grid floor "
+            f"{grid[0]:.4g}, so the endorsement set covers the whole modeled support. "
+            "If you expected a finite threshold, widen `halfwidth` / raise `grid_size`.",
+            stacklevel=3,
+        )
+        return
     if not np.isfinite(v):
         return
     span = grid[-1] - grid[0]
@@ -191,13 +247,18 @@ def _warn_if_near_edge(v: float, grid: np.ndarray, level: int) -> None:
 def _threshold_from_grid(grid: np.ndarray, p: np.ndarray) -> float:
     """Smallest v with p(v) >= 0, by linear interpolation of the sign change.
 
-    `p` is assumed nondecreasing (Prop. 3). Returns the grid's lower edge if p is
-    already nonnegative there, or +inf if the endorsement set S_n is empty.
+    `p` is assumed nondecreasing (Prop. 3). The two saturated cases are returned as
+    the honest infinities rather than a finite grid edge:
+      * p < 0 across the grid  -> +inf  (endorsement set S_n empty: never proceed).
+      * p >= 0 at the grid floor -> -inf (S_n covers the modeled support: always
+        proceed). Returning grid[0] here would mislabel a draw below the floor as
+        "exit"; -inf is symmetric with the +inf case and is the truthful threshold for
+        a saturated endorsement set. The caller warns so a too-narrow grid is visible.
     """
-    if p[0] >= 0:
-        return float(grid[0])
     if p[-1] < 0:
         return np.inf
+    if p[0] >= 0:
+        return -np.inf
     i = int(np.argmax(p >= 0))  # first index with p >= 0; i >= 1 given p[0] < 0
     x0, x1, y0, y1 = grid[i - 1], grid[i], p[i - 1], p[i]
     return float(x0 - y0 * (x1 - x0) / (y1 - y0))
@@ -271,12 +332,21 @@ def train_tarquin(
         # rule against the Gaussian measure on the previous level's grid (endpoints
         # half-weighted). Robust to the kink of the positive part, vectorized over the
         # current grid.
-        p_prev_pos = np.maximum(p[n - 1], 0.0) * _trapz_weights(g_prev.size)
+        tw = _trapz_weights(g_prev.size)
+        p_prev_pos = np.maximum(p[n - 1], 0.0) * tw
         dx = g_prev[1] - g_prev[0]
         integral = np.empty_like(means)  # (G, K)
         for k in range(pair.n_components):
             w_mat = _gauss_pdf(g_prev[None, :], means[:, k][:, None], sigmas[k])
-            integral[:, k] = (w_mat @ p_prev_pos) * dx
+            num = (w_mat @ p_prev_pos) * dx  # int (p_{n-1}^T)^+ f_k over the grid
+            # Renormalize by the conditional mass actually captured on the grid, so a
+            # component whose conditional mean has been pushed toward a grid edge (large
+            # |v_n|) is not silently under-integrated. That truncation is the main source
+            # of finite-sample non-monotonicity in p_n^T. With the default +-10*sigma grid
+            # the captured mass is ~1 through the bulk, so this is a no-op there and on the
+            # exact single-component Gaussian example (mass = 1 to ~23 digits).
+            mass = (w_mat @ tw) * dx  # int f_k over the grid (<= 1)
+            integral[:, k] = np.divide(num, mass, out=np.zeros_like(num), where=mass > 0)
 
         c_prev = float(c[N - n])  # README-indexed c_{n-1}
         p_n = (weights * integral).sum(axis=1) - c_prev
@@ -324,9 +394,33 @@ def infer_tarquin(v_star, v) -> np.ndarray:
 # --- Fitting, book construction, and policy evaluation helpers -------------
 
 
+def _fit_one_gmm(X, n_components, random_state, covariance_type, **kwargs):
+    """Fit a GMM to `X`, selecting the component count by BIC when `n_components` is a
+    sequence (range / list / array). A scalar fits that single count. Extra sklearn
+    kwargs (`n_init`, `reg_covar`, ...) flow straight through to `GaussianMixture`."""
+    candidates = (
+        [int(n_components)] if np.isscalar(n_components)
+        else [int(k) for k in n_components]
+    )
+    if not candidates:
+        raise ValueError("n_components must be a positive int or a nonempty sequence")
+    best_gmm, best_bic = None, np.inf
+    for k in candidates:
+        g = GaussianMixture(
+            n_components=k,
+            random_state=random_state,
+            covariance_type=covariance_type,
+            **kwargs,
+        ).fit(X)
+        bic = g.bic(X)
+        if bic < best_bic:
+            best_gmm, best_bic = g, bic
+    return best_gmm
+
+
 def fit_pairwise_gmms(
     data,
-    n_components: int = 5,
+    n_components=5,
     random_state: int = 0,
     covariance_type: Literal["full", "tied", "diag", "spherical"] = "full",
     **kwargs,
@@ -338,26 +432,26 @@ def fit_pairwise_gmms(
     on its own two columns (lower-dimensional and more data-efficient than fitting
     the full joint and marginalizing). Returns the pairs bottom-up, ready for
     `train_tarquin`: pairs[0] = (V_1, V_0), ..., pairs[N-1] = (V_N, V_{N-1}).
+
+    `n_components` may be an int or a sequence of candidate counts; a sequence selects
+    each pair's count independently by BIC. Pass extra sklearn `GaussianMixture` kwargs
+    (notably `n_init` for multiple EM restarts, `reg_covar` to regularize covariances)
+    via **kwargs to harden the fit against poor local optima / collapsed components.
     """
     data = np.asarray(data)
     N = data.shape[1] - 1
     pairs = []
     for n in range(1, N + 1):
         cols = [N - n, N - n + 1]  # (V_n, V_{n-1}) in README column order
-        gmm = GaussianMixture(
-            n_components=n_components,
-            random_state=random_state,
-            covariance_type=covariance_type,
-            **kwargs,
+        pairs.append(
+            _fit_one_gmm(data[:, cols], n_components, random_state, covariance_type, **kwargs)
         )
-        gmm.fit(data[:, cols])
-        pairs.append(gmm)
     return pairs
 
 
 def fit_joint_gmm(
     data,
-    n_components: int = 10,
+    n_components=10,
     random_state: int = 0,
     covariance_type: Literal["full", "tied", "diag", "spherical"] = "full",
     **kwargs,
@@ -367,15 +461,12 @@ def fit_joint_gmm(
     Columns must be in README order (V_N, ..., V_0) with V_0 last. Useful when a
     book's abridgements/rearrangements need conditionals for arbitrary adjacent
     pairs (see `pairs_from_joint`); for a fixed ordering prefer `fit_pairwise_gmms`.
+
+    `n_components` may be an int or a sequence of candidates (selected by BIC). Extra
+    sklearn kwargs (`n_init`, `reg_covar`, ...) pass through; for downstream use with
+    `pairs_from_joint`/`marginalize_gmm` any `covariance_type` is supported.
     """
-    gmm = GaussianMixture(
-        n_components=n_components,
-        random_state=random_state,
-        covariance_type=covariance_type,
-        **kwargs,
-    )
-    gmm.fit(np.asarray(data))
-    return gmm
+    return _fit_one_gmm(np.asarray(data), n_components, random_state, covariance_type, **kwargs)
 
 
 def pairs_from_joint(gmm_full: GaussianMixture, col_order) -> list[GaussianMixture]:
@@ -426,11 +517,21 @@ def enumerate_abridgements(col_order):
     singleton {V_0} is excluded because it corresponds to seeing V_0 for
     free -- an unphysical upper bound, not a feasible policy. Original
     ordering is preserved within each yielded tuple.
+
+    Note: the count is exponential in book size (2^(|delta|-1) - 2), and ranking
+    abridgements trains each one, so enumerating a large book is expensive. A warning
+    is emitted past ~20 prophecies.
     """
     from itertools import combinations
 
     head, tail = tuple(col_order[:-1]), col_order[-1]
     M = len(col_order)
+    if M - 1 > 20:
+        warnings.warn(
+            f"enumerating 2^{M - 1} - 2 abridgements of a {M}-prophecy book; this count "
+            "(and the cost of ranking them) grows exponentially in book size.",
+            stacklevel=2,
+        )
     for size in range(1, M - 1):
         for combo in combinations(head, size):
             yield (*combo, tail)
@@ -486,6 +587,91 @@ def evaluate_policy_mc(
         else:
             pi += alive * (samples[:, col] - t)
     return pi
+
+
+# --- Assumption diagnostics and train/eval splitting -----------------------
+
+
+def diagnose_sufficiency(data) -> dict:
+    """Necessary-condition check for Markov sufficiency (Assumption 1).
+
+    Columns must be in README order (V_N, ..., V_0). For each interior triple of
+    consecutive columns (V_{n+1}, V_n, V_{n-1}) returns the partial correlation of the
+    two outer prophecies given the middle one. Under the chain V_N -> ... -> V_0 we have
+    V_{n+1} ⊥ V_{n-1} | V_n, so each partial correlation should be ~0.
+
+    This is a *linear, necessary* check: values near 0 are consistent with sufficiency
+    but do not prove it (nonlinear residual dependence is invisible to a correlation);
+    a large value is positive evidence *against* sufficiency. Pair it with
+    `diagnose_fosd` and the training-time monotonicity warning for a fuller picture.
+
+    Returns dict with "partial_corr" (one entry per interior V_n, top-down) and "max_abs".
+    """
+    data = np.asarray(data, dtype=float)
+    D = data.shape[1]
+    pcs = []
+    for j in range(1, D - 1):
+        x, z, y = data[:, j - 1], data[:, j], data[:, j + 1]  # outer, middle, outer
+        r_xy = np.corrcoef(x, y)[0, 1]
+        r_xz = np.corrcoef(x, z)[0, 1]
+        r_yz = np.corrcoef(y, z)[0, 1]
+        denom = np.sqrt(max((1 - r_xz**2) * (1 - r_yz**2), np.finfo(float).tiny))
+        pcs.append((r_xy - r_xz * r_yz) / denom)
+    pcs = np.array(pcs)
+    return {"partial_corr": pcs, "max_abs": float(np.abs(pcs).max()) if pcs.size else 0.0}
+
+
+def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
+    """Necessary-condition check for stochastic monotonicity / FOSD (Assumption 2).
+
+    Columns in README order (V_N, ..., V_0). For each adjacent pair (V_n, V_{n-1}) bins
+    V_n into `n_bins` quantile bins and compares the empirical conditional CDF of V_{n-1}
+    across bins at `n_thresholds` quantile thresholds. FOSD requires a higher V_n to give
+    a stochastically larger V_{n-1}, i.e. the conditional CDF is weakly *decreasing* as
+    the bin index rises, at every threshold. The reported violation per pair is the
+    largest upward CDF step between adjacent bins (0 = no violation, in [0, 1]).
+
+    A necessary, data-level check (the fit may smooth or worsen it). Combine with the
+    training-time monotonicity warning, which acts on the *fitted* conditionals.
+
+    Returns dict with "violation" (one per adjacent pair, README order (V_N,V_{N-1})..) and
+    "max".
+    """
+    data = np.asarray(data, dtype=float)
+    D = data.shape[1]
+    viols = []
+    for c in range(D - 1):
+        cond, outc = data[:, c], data[:, c + 1]  # V_n, V_{n-1}
+        edges = np.quantile(cond, np.linspace(0.0, 1.0, n_bins + 1))
+        edges[-1] = np.inf  # right edge open so the max lands in the last bin
+        idx = np.clip(np.searchsorted(edges, cond, side="right") - 1, 0, n_bins - 1)
+        ts = np.quantile(outc, np.linspace(0.02, 0.98, n_thresholds))
+        cdfs = np.full((n_bins, n_thresholds), np.nan)
+        for b in range(n_bins):
+            sel = outc[idx == b]
+            if sel.size:
+                cdfs[b] = (sel[:, None] <= ts[None, :]).mean(axis=0)
+        steps = np.diff(cdfs, axis=0)  # >0 means CDF rose with V_n: an FOSD violation
+        worst = float(np.nanmax(np.maximum(steps, 0.0))) if np.isfinite(steps).any() else 0.0
+        viols.append(worst)
+    viols = np.array(viols)
+    return {"violation": viols, "max": float(viols.max()) if viols.size else 0.0}
+
+
+def holdout_split(data, test_frac: float = 0.3, seed: int = 0):
+    """Shuffle-split rows into (train, test).
+
+    Fit the conditionals on `train` (via `fit_pairwise_gmms` / `fit_joint_gmm`), then
+    score the learned policy on `test` with `evaluate_policy_mc`. Scoring on the same
+    sample used to fit is optimistically biased; a holdout removes that bias.
+    """
+    data = np.asarray(data)
+    if not 0.0 < test_frac < 1.0:
+        raise ValueError(f"test_frac must be in (0, 1); got {test_frac}")
+    n = data.shape[0]
+    perm = np.random.default_rng(seed).permutation(n)
+    cut = int(round(n * (1.0 - test_frac)))
+    return data[perm[:cut]], data[perm[cut:]]
 
 
 if __name__ == "__main__":
