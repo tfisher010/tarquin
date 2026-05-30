@@ -91,7 +91,112 @@ def test_fit_pairwise_then_train_runs():
     pairs = tq.fit_pairwise_gmms(arr, n_components=5)
     assert len(pairs) == 2
     v_star, _ = tq.train_tarquin(
-        pairs, np.array([100.0, 100.0]), t=float(np.median(arr[:, 2]))
+        pairs, np.array([100.0, 100.0]), t=float(np.median(arr[:, 2])), monotone="off"
     )
     assert v_star.shape == (3,)
     assert np.isfinite(v_star[2])
+
+
+# --- regression / robustness tests for the fixes -----------------------------
+
+
+def _nonmonotone_data(n=20000, seed=1):
+    """V_0 a U-shaped (non-FOSD) function of V_1 -- breaks stochastic monotonicity."""
+    rng = np.random.default_rng(seed)
+    v2 = rng.normal(0, 1, n)
+    v1 = 0.8 * v2 + 0.6 * rng.normal(0, 1, n)
+    v0 = v1**2 + 0.3 * rng.normal(0, 1, n)
+    return np.column_stack([v2, v1, v0])
+
+
+def test_nonmonotone_detected_and_handled():
+    pairs = tq.fit_pairwise_gmms(_nonmonotone_data(), n_components=6)
+    c, t = np.array([0.01, 0.01]), 0.0
+    # "check" warns but still returns.
+    with pytest.warns(UserWarning, match="not nondecreasing"):
+        tq.train_tarquin(pairs, c, t, monotone="check")
+    # "raise" errors out.
+    with pytest.raises(ValueError, match="not nondecreasing"):
+        tq.train_tarquin(pairs, c, t, monotone="raise")
+    # "project" warns and yields monotone value functions.
+    with pytest.warns(UserWarning, match="Projecting"):
+        _, tab = tq.train_tarquin(pairs, c, t, monotone="project")
+    for p in tab["p"]:
+        assert np.all(np.diff(p) >= -1e-9)
+
+
+def test_default_monotone_is_project_and_noop_on_gaussian():
+    # Single-component Gaussian is already monotone: project must not change the
+    # README thresholds, and must emit no warning.
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("error")  # any warning -> failure
+        v_star, tab = tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0)  # default project
+    assert v_star[0] == pytest.approx(0.2886, abs=1e-3)
+    assert v_star[1] == pytest.approx(0.1204, abs=1e-3)
+    for p in tab["p"]:
+        assert np.all(np.diff(p) >= -1e-9)
+
+
+def test_negative_cost_and_bad_shape_raise():
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    with pytest.raises(ValueError, match="nonnegative"):
+        tq.train_tarquin(pairs, np.array([-0.1, 0.1]), t=1.0)
+    with pytest.raises(ValueError, match="length 2"):
+        tq.train_tarquin(pairs, np.array([0.1, 0.1, 0.1]), t=1.0)
+    with pytest.raises(ValueError, match="shape mismatch"):
+        tq.infer_tarquin([0.0, 0.0, 0.0], [1.0, 1.0])
+
+
+def test_cost_order_lockin():
+    # train_book maps per-prophecy costs to README order; lock it with asymmetric costs.
+    g = gaussian_example()
+    pairs = tq.pairs_from_joint(g, (0, 1, 2))
+    cost_per_col = np.array([np.nan, 0.2, 0.01])  # cols (V_2 free, V_1=0.2, V_0=0.01)
+    v_book, _ = tq.train_book(g, (0, 1, 2), cost_per_col, t=1.0)
+    # README order c = (c_1, c_0) = (cost[V_1], cost[V_0]) = (0.2, 0.01).
+    v_direct, _ = tq.train_tarquin(pairs, np.array([0.2, 0.01]), t=1.0)
+    assert v_book == pytest.approx(v_direct, abs=1e-9)
+
+
+def test_marginalize_gmm_is_usable():
+    # precisions_cholesky_ is now set, so sklearn's scoring/sampling path works.
+    g = gaussian_example()
+    m = tq.marginalize_gmm(g, [0, 1])
+    X, _ = m.sample(100)
+    assert X.shape == (100, 2)
+    assert np.all(np.isfinite(m.score_samples(X)))
+
+
+def test_thresholds_beat_perturbations_mc():
+    # The learned thresholds should maximize E[pi] under the MC policy: perturbing
+    # either nontrivial threshold up or down should not increase the payoff.
+    g = gaussian_example()
+    pairs = tq.pairs_from_joint(g, (0, 1, 2))
+    v_star, _ = tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0)
+    cost = np.array([np.nan, 0.05, 0.1])
+    rng = np.random.default_rng(0)
+    S = rng.multivariate_normal(g.means_[0], g.covariances_[0], size=1_000_000)
+    base = tq.evaluate_policy_mc(S, (0, 1, 2), v_star, cost, t=1.0).mean()
+    for j in (0, 1):  # v_2*, v_1* (v_0* = t is fixed by Prop. 1)
+        for d in (-0.1, 0.1):
+            vp = v_star.copy()
+            vp[j] += d
+            alt = tq.evaluate_policy_mc(S, (0, 1, 2), vp, cost, t=1.0).mean()
+            assert alt <= base + 5e-4  # within MC noise
+
+
+def test_abridgement_dominance_regression():
+    # README claim: the full book (0,1,2) is dominated by both 2-prophecy abridgements.
+    g = gaussian_example()
+    cost = np.array([np.nan, 0.05, 0.1])
+    rng = np.random.default_rng(0)
+    S = rng.multivariate_normal(g.means_[0], g.covariances_[0], size=1_000_000)
+    means = {}
+    for book in [(0, 1, 2), (0, 2), (1, 2)]:
+        v, _ = tq.train_book(g, book, cost, t=1.0)
+        means[book] = tq.evaluate_policy_mc(S, book, v, cost, t=1.0).mean()
+    assert means[(1, 2)] > means[(0, 1, 2)]
+    assert means[(0, 2)] > means[(0, 1, 2)]
