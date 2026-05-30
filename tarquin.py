@@ -26,6 +26,21 @@ from typing import Literal
 import numpy as np
 from sklearn.mixture import GaussianMixture
 
+__version__ = "0.1.0"
+
+__all__ = [
+    "train_tarquin",
+    "infer_tarquin",
+    "fit_pairwise_gmms",
+    "fit_joint_gmm",
+    "pairs_from_joint",
+    "marginalize_gmm",
+    "train_book",
+    "enumerate_abridgements",
+    "evaluate_policy_mc",
+    "make_demo_data",
+]
+
 _INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
 
 
