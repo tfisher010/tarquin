@@ -458,6 +458,103 @@ def test_diagnose_saturation_finite_not_trivial():
         tq.diagnose_saturation(v_star, tab, np.array([0.05, 0.1, 0.1]))
 
 
+# --- P1: monotone-bounded extrapolation + partial-identification (bounds) ------
+
+
+def test_fit_pairwise_records_support_lo():
+    data = _gaussian_example_samples(20_000, seed=2)
+    trunc = tq.simulate_incumbent_truncation(data, [0.3, -0.2])  # (tau_2, tau_1)
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        pairs = tq.fit_pairwise_gmms(trunc, n_components=1)
+    # pairs[1] = (V_2, V_1): conditioning col V_2 is observed only where V_2 > tau_2 = 0.3.
+    assert pairs[1].tarquin_support_lo_ == pytest.approx(0.3, abs=0.03)
+    # pairs[0] = (V_1, V_0): conditioning col V_1 observed only where V_1 > tau_1 = -0.2.
+    assert pairs[0].tarquin_support_lo_ == pytest.approx(-0.2, abs=0.03)
+
+
+def test_bounds_equal_point_when_fully_identified():
+    # pairs_from_joint carry no support attribute -> a_n = -inf -> identical to the point fit.
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    v_pt, _ = tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0)
+    v_lo, v_hi, tab = tq.train_tarquin(
+        pairs, np.array([0.05, 0.1]), t=1.0, identification="bounds")
+    assert v_lo == pytest.approx(v_pt, abs=1e-9)
+    assert v_hi == pytest.approx(v_pt, abs=1e-9)
+    assert "p_lo" in tab and "p_hi" in tab
+
+
+def test_bounds_collapse_when_incumbent_loose():
+    import warnings as _w
+
+    data = _gaussian_example_samples(200_000, seed=0)
+    c, t = np.array([0.05, 0.1]), 1.0
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        v_clean, _ = tq.train_tarquin(tq.fit_pairwise_gmms(data, n_components=1), c, t)
+        loose = tq.simulate_incumbent_truncation(data, [0.0, 0.0])  # below the true thresholds
+        v_lo, v_hi, _ = tq.train_tarquin(
+            tq.fit_pairwise_gmms(loose, n_components=1), c, t, identification="bounds")
+    for i in (0, 1, 2):                       # identified everywhere -> interval collapses
+        assert v_lo[i] == pytest.approx(v_hi[i], abs=2e-2)
+    assert v_lo[0] == pytest.approx(v_clean[0], abs=0.05)
+
+
+def test_bounds_bracket_unidentified_threshold():
+    import warnings as _w
+
+    data = _gaussian_example_samples(200_000, seed=0)
+    c, t = np.array([0.05, 0.1]), 1.0
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        v_clean, _ = tq.train_tarquin(tq.fit_pairwise_gmms(data, n_components=1), c, t)
+        tight = tq.simulate_incumbent_truncation(data, [0.5, 0.0])  # tau_2=0.5 > true v_2*~0.29
+        v_lo, v_hi, _ = tq.train_tarquin(
+            tq.fit_pairwise_gmms(tight, n_components=1), c, t, identification="bounds")
+    # v_2^* (index 0) is below the identified support: bracketed by -inf and ~the support edge.
+    assert v_lo[0] == -np.inf
+    assert np.isfinite(v_hi[0])
+    assert v_lo[0] <= v_clean[0] <= v_hi[0]            # the truth lies inside the interval
+    assert v_hi[0] == pytest.approx(0.5, abs=0.1)      # ~ incumbent floor / observed min of V_2
+    assert v_lo[1] == pytest.approx(v_hi[1], abs=2e-2)  # v_1^* stays identified (tau_1 loose)
+    assert v_lo[2] == pytest.approx(t, abs=1e-9)        # v_0^* = t exactly, both bounds
+
+
+def test_extrapolation_clamp_and_flag():
+    import warnings as _w
+
+    data = _gaussian_example_samples(200_000, seed=0)
+    c, t = np.array([0.05, 0.1]), 1.0
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        pairs = tq.fit_pairwise_gmms(tq.simulate_incumbent_truncation(data, [0.5, 0.0]),
+                                     n_components=1)
+        a2 = pairs[1].tarquin_support_lo_                 # identified edge of V_2
+        v_clamp, _ = tq.train_tarquin(pairs, c, t, extrapolation="clamp")
+        v_gmm, _ = tq.train_tarquin(pairs, c, t, extrapolation="gmm")
+    assert np.isfinite(v_clamp[0])
+    assert v_clamp[0] == pytest.approx(a2, abs=0.05)      # conservative: report at the edge
+    assert v_gmm[0] < a2                                  # free gmm extrapolates below it
+    with pytest.warns(UserWarning, match="below the identified support edge"):
+        tq.train_tarquin(pairs, c, t, extrapolation="flag")
+
+
+def test_bounds_support_lo_override():
+    # An explicit support_lo overrides the per-pair attribute: forcing a high a_2 makes v_2^*
+    # unidentified even on clean pairs (no truncation), bracketing it at [-inf, ~a_2].
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    v_lo, v_hi, _ = tq.train_tarquin(
+        pairs, np.array([0.05, 0.1]), t=1.0, identification="bounds",
+        support_lo=np.array([2.0, np.nan, np.nan]))  # README order; force a_2 (V_2 slot) = 2.0
+    assert v_lo[0] == -np.inf
+    assert v_hi[0] == pytest.approx(2.0, abs=0.1)
+    with pytest.raises(ValueError, match="support_lo of length 3"):
+        tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0, identification="bounds",
+                         support_lo=np.array([2.0, 0.0]))
+
+
 def test_evaluate_policy_mc_hand_computed():
     # Lock the cost accounting against a payoff computed by hand on 3 deterministic rows.
     # Book (col 0, col 1); v* = (1.0 for col 0, 0.0 = t for col 1); acquiring col 1 costs 2.
