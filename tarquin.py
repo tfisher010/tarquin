@@ -229,6 +229,37 @@ def _build_grids(pairs: list[GaussianMixture], halfwidth: float, size: int,
     return grids
 
 
+def _warn_if_underresolved(pairs: list[GaussianMixture], grids: list[np.ndarray],
+                           min_steps: float = 2.0) -> None:
+    """Warn when a pair's narrowest conditional is too sharp for the grid step.
+
+    The grid is sized to each *marginal*'s spread (mean +- halfwidth*std), but the
+    recursion integrates the *conditional* f_(n-1|n) on that grid. A mixture component
+    whose conditional std is smaller than ~`min_steps` grid steps is under-resolved by
+    the trapezoidal rule, biasing p_n^T. This is distinct from the documented edge
+    under-*coverage* (which mass renormalization corrects): renormalizing by on-grid
+    mass cannot fix a peak that the grid samples too coarsely. It bites when a BIC sweep
+    picks a tight component on a heavy-tailed marginal, so the marginal-sized grid is
+    coarse relative to that component. Raise `grid_size` or lower `n_components`.
+    """
+    for n in range(1, len(pairs) + 1):
+        cov = pairs[n - 1].covariances_  # (K, 2, 2): col 0 = V_n, col 1 = V_{n-1}
+        s_cc = np.maximum(cov[:, 0, 0], np.finfo(float).tiny)
+        cond_var = np.maximum(cov[:, 1, 1] - cov[:, 0, 1] ** 2 / s_cc, np.finfo(float).tiny)
+        min_sigma = float(np.sqrt(cond_var).min())  # narrowest conditional of V_{n-1}
+        g_prev = grids[n - 1]                        # V_{n-1} is integrated on this grid
+        dx = float(g_prev[1] - g_prev[0])
+        if min_sigma < min_steps * dx:
+            warnings.warn(
+                f"pair (V_{n}, V_{n - 1}): narrowest conditional std {min_sigma:.3g} is below "
+                f"~{min_steps:g}x the grid step dx={dx:.3g} on the V_{n - 1} grid, so the "
+                "trapezoidal integral under-resolves that component and p_n^T may be biased "
+                "(distinct from edge under-coverage, which renormalization handles). Raise "
+                "`grid_size` or lower `n_components`.",
+                stacklevel=3,
+            )
+
+
 def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.ndarray:
     """Detect / handle a non-nondecreasing value function (Prop. 3 should guarantee it).
 
@@ -277,6 +308,26 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
     return p
 
 
+def _warn_if_finite_near_edge(v: float, grid: np.ndarray, level: int) -> None:
+    """Warn when a *finite* threshold sits within 0.1% of a grid edge (unresolved).
+
+    Split out from `_warn_if_near_edge` so the bounds path can reuse it without the
+    saturation branches: a +/-inf bound is by-design there (it brackets an unidentified
+    region), so warning on it would be noise, but a finite bound pinned to a grid edge
+    still signals the grid should be widened.
+    """
+    if not np.isfinite(v):
+        return
+    span = grid[-1] - grid[0]
+    if v <= grid[0] + 1e-3 * span or v >= grid[-1] - 1e-3 * span:
+        warnings.warn(
+            f"v_{level}^* = {v:.4g} sits within 0.1% of a grid edge "
+            f"[{grid[0]:.4g}, {grid[-1]:.4g}]; widen `halfwidth` or raise `grid_size` "
+            "for a reliable threshold.",
+            stacklevel=3,
+        )
+
+
 def _warn_if_near_edge(v: float, grid: np.ndarray, level: int) -> None:
     """Warn when a threshold is unresolved within the grid: a finite value within 0.1%
     of an edge, or a saturated endorsement set (-inf: p_n^T >= 0 at the grid floor;
@@ -299,16 +350,7 @@ def _warn_if_near_edge(v: float, grid: np.ndarray, level: int) -> None:
             stacklevel=3,
         )
         return
-    if not np.isfinite(v):
-        return
-    span = grid[-1] - grid[0]
-    if v <= grid[0] + 1e-3 * span or v >= grid[-1] - 1e-3 * span:
-        warnings.warn(
-            f"v_{level}^* = {v:.4g} sits within 0.1% of a grid edge "
-            f"[{grid[0]:.4g}, {grid[-1]:.4g}]; widen `halfwidth` or raise `grid_size` "
-            "for a reliable threshold.",
-            stacklevel=3,
-        )
+    _warn_if_finite_near_edge(v, grid, level)
 
 
 def _threshold_from_grid(grid: np.ndarray, p: np.ndarray) -> float:
@@ -469,12 +511,23 @@ def train_tarquin(
     c = np.asarray(c, dtype=float)
     if c.shape != (N,):
         raise ValueError(f"expected c of length {N}, got shape {c.shape}")
+    # Reject non-finite costs up front. A NaN would otherwise propagate silently into the
+    # value functions and surface only as an opaque "input contains NaN" from the isotonic
+    # projection. The common cause is a misaligned `cost_per_prophecy` (e.g. `train_book` on
+    # a rearrangement that makes the originally-free top column a paid step, picking up its
+    # NaN cost slot). `c < 0` does not catch NaN (NaN < 0 is False), so check finiteness too.
+    if not np.all(np.isfinite(c)):
+        raise ValueError(
+            f"cost vector must be finite; got {c}. (If from train_book, the new top column "
+            "is free but every *other* column in the book needs a finite cost_per_prophecy.)"
+        )
     if np.any(c < 0):
         raise ValueError(f"cost vector must be nonnegative (README: c in R^N_>=0); got {c}")
 
     if grid_bounds is not None and len(grid_bounds) != N + 1:
         raise ValueError(f"expected grid_bounds of length {N + 1}, got {len(grid_bounds)}")
     grids = _build_grids(pairs, halfwidth, grid_size, grid_bounds)
+    _warn_if_underresolved(pairs, grids)
     use_support = identification == "bounds" or extrapolation in ("clamp", "flag")
     a = _resolve_support_lo(pairs, N, support_lo, use_support)  # a[n-1] = a_n for level n
 
@@ -529,6 +582,19 @@ def _train_bounds(pairs, c, t, grids, a, monotone):
     edge value p_n^T(a_n) (no better than the edge), the pessimistic floors to -c_{n-1}
     (continuation value 0). Returns (v_lo, v_hi, tab); v_lo (from the optimistic envelope,
     the most-proceeding) is the lowest the threshold can be, v_hi (pessimistic) the highest.
+
+    Envelope sketch over v_n, with the identified support edge a_n (recursion runs right->left
+    on the grid; p is nondecreasing on the identified region [a_n, ->)):
+
+        p_n^T
+          ^            ________ p_hi (optimistic): clamps flat at p_n^T(a_n) below a_n
+          |          /
+        0 +........./....................  (v_lo = where p_hi crosses 0; -inf if p_hi(a_n)>=0)
+          |        /:
+          |   ____/ :__________ p_lo (pessimistic): floored to -c_{n-1} below a_n
+          |  -c    :
+          +--------+------------------> v_n
+                  a_n   (below a_n: unidentified; bounds open to [-inf, ~a_n])
     """
     N = len(pairs)
     base = grids[0] - t          # V_0 is identified; v_0^* = t exactly
@@ -554,8 +620,14 @@ def _train_bounds(pairs, c, t, grids, a, monotone):
             pl[below] = -c_prev      # pessimistic: continuation value 0
         p_hi.append(ph)
         p_lo.append(pl)
-        v_lo_asc.append(_threshold_from_grid(g_n, ph))  # optimistic (largest p) -> lowest v*
-        v_hi_asc.append(_threshold_from_grid(g_n, pl))  # pessimistic -> highest v*
+        v_lo = _threshold_from_grid(g_n, ph)  # optimistic (largest p) -> lowest v*
+        v_hi = _threshold_from_grid(g_n, pl)  # pessimistic -> highest v*
+        # A +/-inf bound here is by design (it brackets the unidentified region), so only the
+        # finite-near-edge check applies -- a finite bound pinned to a grid edge still warns.
+        _warn_if_finite_near_edge(v_lo, g_n, n)
+        _warn_if_finite_near_edge(v_hi, g_n, n)
+        v_lo_asc.append(v_lo)
+        v_hi_asc.append(v_hi)
 
     tab = {"grids": grids, "p_lo": p_lo, "p_hi": p_hi, "support_lo": a}
     return np.array(v_lo_asc[::-1]), np.array(v_hi_asc[::-1]), tab
@@ -789,6 +861,22 @@ def train_book(
 
     Covers both abridgements (subset of columns) and rearrangements (reordered
     columns) with the same entry point.
+
+    EXACTNESS CAVEAT (abridgement vs. rearrangement). The recursion (Prop. 4) collapses
+    to adjacent-pair conditionals only because V_N -> ... -> V_0 is Markov *in the
+    evaluated order*. The two cases differ here:
+      * Abridgements (order-preserving subsets) stay exact: marginalizing out interior
+        nodes of a Markov chain leaves a Markov chain, so the adjacent-pair conditionals
+        remain the correct ones.
+      * Genuine rearrangements (permutations) are NOT exact in general: a permuted order
+        is usually not Markov (e.g. the worked Gaussian's precision is tridiagonal only in
+        the natural order), so `pairs_from_joint` hands the recursion adjacent-pair
+        conditionals that drop the dependence on earlier-acquired prophecies, and the
+        trained v* is only an approximation -- possibly sub-optimal for that order.
+    `evaluate_policy_mc` still scores the *actual* realized policy on true draws, so a book
+    *ranking* via Monte Carlo is honest either way; only the trained thresholds for a
+    non-Markov rearrangement are suspect. Run `diagnose_sufficiency` on the reordered
+    columns before trusting a rearranged book's v*.
 
     Parameters
     ----------
@@ -1184,7 +1272,7 @@ def diagnose_saturation(v_star, tab, c) -> dict:
     return {"levels": levels, "cost_trivial": cost_trivial, "summary": summary}
 
 
-def diagnose_regime_overlap(data, regime, *, cols=None) -> dict:
+def diagnose_regime_overlap(data, regime) -> dict:
     """Per-regime observed support of each conditioning prophecy, to expose how pooling across
     incumbent-threshold *regimes* widens the identified (overlap) region.
 
@@ -1206,7 +1294,9 @@ def diagnose_regime_overlap(data, regime, *, cols=None) -> dict:
     ----------
     data : (n, D) array in README order (V_N, ..., V_0); ragged (NaN where un-acquired).
     regime : length-n labels (any hashable, e.g. an incumbent-threshold tag or a time bucket).
-    cols : ignored placeholder for forward compatibility; the conditioning prophecies are used.
+
+    The columns are dictated by the adjacent-pair structure (every conditioning prophecy
+    V_1..V_N is reported), so there is no column-selection argument.
 
     Returns dict keyed by conditioning column index (the V_n slot), each {"prophecy": "V_n",
     "per_regime": {label: (lo, hi, n_obs)}, "pooled": (lo, hi), "floor_gain": float}, plus
@@ -1217,7 +1307,6 @@ def diagnose_regime_overlap(data, regime, *, cols=None) -> dict:
     regime = np.asarray(regime)
     if regime.shape[0] != data.shape[0]:
         raise ValueError(f"regime length {regime.shape[0]} != n rows {data.shape[0]}")
-    del cols  # accepted for forward-compat; the pair structure dictates the columns
     N = data.shape[1] - 1
     labels = list(dict.fromkeys(regime.tolist()))  # stable unique order
     out: dict = {}
