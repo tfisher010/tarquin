@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "ruff>=0.4"]
+dev = ["pytest>=7", "ruff>=0.4", "mypy>=1.8"]
 examples = ["matplotlib>=3.4"]
 
 [project.urls]
@@ -55,3 +55,10 @@ target-version = "py39"
 # Conservative, bug-catching set: pyflakes (F) + pycodestyle errors (E). These flag
 # real defects (undefined names, unused imports, syntax) without enforcing style churn.
 select = ["E", "F"]
+
+[tool.mypy]
+# Light type check on the module: enough to catch real defects (e.g. a name reused as
+# both a list and an ndarray) without demanding stubs for numpy/sklearn. Not strict;
+# the annotations here are practical, not exhaustive.
+files = ["tarquin.py"]
+ignore_missing_imports = true
