@@ -642,6 +642,14 @@ def _train_bounds(pairs, c, t, grids, a, monotone):
         p_lo.append(pl)
         v_lo = _threshold_from_grid(g_n, ph)  # optimistic (largest p) -> lowest v*
         v_hi = _threshold_from_grid(g_n, pl)  # pessimistic -> highest v*
+        if below.any() and v_hi < a_n:
+            # Pin the pessimistic bound at the support edge, mirroring the point clamp path.
+            # Below a_n the pessimistic floor is -c_{n-1}; with a (near-)zero step cost that floor
+            # is ~0, so `_threshold_from_grid` reads p_lo[0] >= 0 and returns -inf ("always proceed
+            # even pessimistically") -- which collapses the interval to [-inf, -inf]. The honest
+            # highest threshold is the support edge a_n: below it the sample identifies nothing, so
+            # a cut cannot be ruled out up to a_n. (+inf passes through: max(+inf, a_n) = +inf.)
+            v_hi = a_n
         # A +/-inf bound here is by design (it brackets the unidentified region), so only the
         # finite-near-edge check applies -- a finite bound pinned to a grid edge still warns.
         _warn_if_finite_near_edge(v_lo, g_n, n)
@@ -979,6 +987,13 @@ def evaluate_policy_mc(
     At step i (top = 0), a row is "alive" iff every threshold check up to
     and including i has passed. Each surviving row pays the cost of
     acquiring col_order[i+1]; the final surviving rows receive v_0 - t.
+
+    REQUIRES UNCENSORED DRAWS. `samples` must reveal every column, because the learned
+    policy generally proceeds *below* the incumbent threshold -- into the region a deployed
+    (truncated) sample never observed. So this is an in-distribution / synthetic-data check
+    (pair it with `holdout_split`); it cannot honestly score the policy on real truncated
+    deployment data in the very region the new policy differs from the incumbent. Closing
+    that gap needs an uncensored experiment, not a holdout of the censored sample.
     """
     samples = np.asarray(samples)
     cost_per_prophecy = np.asarray(cost_per_prophecy, dtype=float)
@@ -1000,58 +1015,80 @@ def evaluate_policy_mc(
 # --- Assumption diagnostics and train/eval splitting -----------------------
 
 
+def _partial_corr(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> float:
+    """First-order partial correlation of x and y given z (equal-length 1-D arrays):
+    r_{xy.z} = (r_xy - r_xz r_yz) / sqrt((1 - r_xz^2)(1 - r_yz^2)). The denominator is
+    floored a hair above 0 so a degenerate r_xz/r_yz ~ 1 yields a finite (large) value
+    rather than a 0/0 NaN."""
+    r_xy = np.corrcoef(x, y)[0, 1]
+    r_xz = np.corrcoef(x, z)[0, 1]
+    r_yz = np.corrcoef(y, z)[0, 1]
+    denom = np.sqrt(max((1 - r_xz**2) * (1 - r_yz**2), np.finfo(float).tiny))
+    return float((r_xy - r_xz * r_yz) / denom)
+
+
 def diagnose_sufficiency(data) -> dict:
     """Necessary-condition check for Markov sufficiency (Assumption 1).
 
     Columns must be in README order (V_N, ..., V_0). For each interior triple of
     consecutive columns (V_{n+1}, V_n, V_{n-1}) returns the partial correlation of the
-    two outer prophecies given the middle one. Under the chain V_N -> ... -> V_0 we have
-    V_{n+1} ⊥ V_{n-1} | V_n, so each partial correlation should be ~0.
+    two outer prophecies given the middle one, computed two ways: on the raw values
+    ("partial_corr", Pearson) and on the ranks ("partial_corr_spearman"). Under the chain
+    V_N -> ... -> V_0 we have V_{n+1} ⊥ V_{n-1} | V_n, so both should be ~0.
 
-    This is a *linear, necessary* check, weak in two distinct ways: (1) it is a
-    correlation, so nonlinear residual dependence is invisible to it; (2) it only tests
-    *span-2* triples (each outer pair is one step beyond the conditioning variable),
-    whereas the full chain also requires V_{n+1} ⊥ {V_{n-1}, ..., V_0} | V_n -- a
-    distribution can pass every consecutive-triple check yet have V_{n+1} depend on
-    V_{n-2} given V_n. Values near 0 are therefore consistent with sufficiency but do
-    not prove it; a large value is positive evidence *against* it. Pair this with
-    `diagnose_fosd` and the training-time monotonicity warning for a fuller picture.
+    This is a *necessary* check, weak in three distinct ways: (1) it is a correlation,
+    so it sees only the dependence its kernel can express -- the rank version extends the
+    Pearson one to *monotone* nonlinear dependence, but **neither catches non-monotone
+    (e.g. U-shaped) conditional dependence**, where both correlations can sit at ~0 despite
+    strong dependence; (2) it only tests *span-2* triples (each outer pair is one step
+    beyond the conditioning variable), whereas the full chain also requires
+    V_{n+1} ⊥ {V_{n-1}, ..., V_0} | V_n -- a distribution can pass every consecutive-triple
+    check yet have V_{n+1} depend on V_{n-2} given V_n; (3) it conditions on the middle
+    prophecy *linearly* (partialling out z), not on its full sigma-algebra. Values near 0
+    are therefore consistent with sufficiency but do not prove it; a large value (in either
+    measure) is positive evidence *against* it. Pair this with `diagnose_fosd` and the
+    training-time monotonicity warning for a fuller picture.
 
-    Rule of thumb: |partial_corr| < ~0.1 is reassuring; > ~0.2 is a concrete signal to
-    re-examine the ordering / construction of V (these are scale-free correlations, so
-    the cutoff is data-agnostic, unlike `diagnose_fosd`'s CDF-step magnitude).
+    Rule of thumb: |corr| < ~0.1 is reassuring; > ~0.2 is a concrete signal to re-examine
+    the ordering / construction of V (these are scale-free correlations, so the cutoff is
+    data-agnostic, unlike `diagnose_fosd`'s CDF-step magnitude). "max_abs" takes the larger
+    of the two measures, so a monotone-nonlinear violation invisible to Pearson still trips it.
 
     NaN-safe for ragged (truncated) samples: each triple is computed on its own
     complete-case rows (those revealing all three columns); a triple with < 2 such rows
-    yields NaN rather than silently propagating a NaN from `np.corrcoef`. "max_abs"
-    ignores NaN entries (NaN only if every triple was unidentified).
+    yields NaN in both measures rather than silently propagating a NaN from `np.corrcoef`.
+    "max_abs" ignores NaN entries (NaN only if every triple was unidentified).
 
-    Returns dict with "partial_corr" (one entry per interior V_n, top-down) and "max_abs".
-    "max_abs" is NaN when nothing was testable (fewer than 3 columns, so no interior triple
-    exists, or every triple was unidentified) -- not 0.0, which would read as a clean pass.
+    Returns dict with "partial_corr" and "partial_corr_spearman" (one entry per interior
+    V_n, top-down) and "max_abs" (the larger absolute value across both measures and all
+    triples). "max_abs" is NaN when nothing was testable (fewer than 3 columns, so no
+    interior triple exists, or every triple was unidentified) -- not 0.0, which would read
+    as a clean pass.
     """
     data = np.asarray(data, dtype=float)
     D = data.shape[1]
-    pcs = []
+    pcs, pcs_rank = [], []
     for j in range(1, D - 1):
         x, z, y = data[:, j - 1], data[:, j], data[:, j + 1]  # outer, middle, outer
         m = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)  # per-triple complete case
         if int(m.sum()) < 2:
             pcs.append(float("nan"))
+            pcs_rank.append(float("nan"))
             continue
         x, y, z = x[m], y[m], z[m]
-        r_xy = np.corrcoef(x, y)[0, 1]
-        r_xz = np.corrcoef(x, z)[0, 1]
-        r_yz = np.corrcoef(y, z)[0, 1]
-        denom = np.sqrt(max((1 - r_xz**2) * (1 - r_yz**2), np.finfo(float).tiny))
-        pcs.append((r_xy - r_xz * r_yz) / denom)
+        pcs.append(_partial_corr(x, y, z))
+        # Rank partial correlation: the Pearson formula on ranks. Spearman-style, so it is
+        # invariant to monotone marginal transforms and catches monotone nonlinear dependence
+        # the raw-value version misses (e.g. the lognormal demo chain).
+        pcs_rank.append(_partial_corr(_avg_ranks(x), _avg_ranks(y), _avg_ranks(z)))
     pc = np.array(pcs)
-    finite = np.abs(pc[np.isfinite(pc)])
+    pc_rank = np.array(pcs_rank)
     # NaN, not 0.0, when nothing was testable (fewer than 3 columns -> no interior triple, or
     # every triple unidentified): a 0.0 here reads as "perfectly Markov" when it actually means
     # "no constraint was checked". A genuinely clean chain still yields a small finite max.
+    finite = np.abs(np.concatenate([pc[np.isfinite(pc)], pc_rank[np.isfinite(pc_rank)]]))
     max_abs = float(finite.max()) if finite.size else float("nan")
-    return {"partial_corr": pc, "max_abs": max_abs}
+    return {"partial_corr": pc, "partial_corr_spearman": pc_rank, "max_abs": max_abs}
 
 
 def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
@@ -1100,7 +1137,13 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
             if sel.size:
                 cdfs[b] = (sel[:, None] <= ts[None, :]).mean(axis=0)
         steps = np.diff(cdfs, axis=0)  # >0 means CDF rose with V_n: an FOSD violation
-        worst = float(np.nanmax(np.maximum(steps, 0.0))) if np.isfinite(steps).any() else 0.0
+        # NaN, not 0.0, when no adjacent pair of bins was jointly populated (e.g. heavy ties
+        # collapse all mass into one bin): there is no step to evaluate, and a 0.0 would read
+        # as a falsely reassuring "no violation". Consistent with the unidentified-pair NaN above.
+        if np.isfinite(steps).any():
+            worst = float(np.nanmax(np.maximum(steps, 0.0)))
+        else:
+            worst = float("nan")
         viols.append(worst)
     viol = np.array(viols)
     finite = viol[np.isfinite(viol)]
@@ -1555,6 +1598,16 @@ def bootstrap_thresholds(
 
 
 if __name__ == "__main__":
+    # Cap loky's worker count so its physical-core probe is skipped. Without this, joblib
+    # (under sklearn's GaussianMixture) shells out to `wmic` to count cores, which prints a
+    # noisy traceback on Windows 11 (ships without `wmic`) before harmlessly falling back.
+    # loky skips that probe only when LOKY_MAX_CPU_COUNT is *strictly below* the logical core
+    # count, so cap at cores-1; `setdefault` respects a value the caller already set (CI pins
+    # LOKY_MAX_CPU_COUNT=2). The demo's fits are tiny, so one fewer worker costs nothing.
+    import os
+
+    os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(max(1, (os.cpu_count() or 2) - 1)))
+
     # Reproduce the README's Gaussian example: v_1^* ~= 0.1204, v_2^* ~= 0.2886.
     mu = np.array([1.0, 0.5, -0.2])
     cov = np.array([
