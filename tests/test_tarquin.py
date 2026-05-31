@@ -367,6 +367,97 @@ def test_n3_chain_trains_and_is_well_posed():
     assert list(tq.infer_tarquin(v_star, [5, -5, 5, 5])) == [1, 0, 0, 0]
 
 
+# --- P0: selection-aware (ragged) fitting on truncated deployment samples ----
+
+
+def _gaussian_example_samples(n, seed=0):
+    """Large i.i.d. draw from the README's Gaussian joint (the clean full-joint sample)."""
+    mu = np.array([1.0, 0.5, -0.2])
+    cov = np.array([[1.0, 0.3, 0.15], [0.3, 1.0, 0.5], [0.15, 0.5, 2.0]])
+    return np.random.default_rng(seed).multivariate_normal(mu, cov, size=n)
+
+
+def test_simulate_incumbent_truncation_is_monotone_missing():
+    data = _gaussian_example_samples(5000, seed=1)
+    trunc = tq.simulate_incumbent_truncation(data, [0.0, 0.0])  # (tau_2, tau_1)
+    assert np.all(np.isfinite(trunc[:, 0]))                     # V_2 always observed (free)
+    miss1 = ~np.isfinite(trunc[:, 1])                           # V_1 missing
+    miss0 = ~np.isfinite(trunc[:, 2])                           # V_0 missing
+    assert np.all(miss0[miss1])                                 # V_1 missing => V_0 missing
+    # V_1 revealed iff the draw proceeded past step 2: V_2 > tau_2 = 0.
+    assert np.array_equal(np.isfinite(trunc[:, 1]), data[:, 0] > 0.0)
+    with pytest.raises(ValueError, match="length 2"):
+        tq.simulate_incumbent_truncation(data, [0.0])
+
+
+def test_fit_pairwise_warns_on_ragged_but_not_on_clean():
+    data = _gaussian_example_samples(20_000, seed=2)
+    trunc = tq.simulate_incumbent_truncation(data, [0.0, 0.0])
+    with pytest.warns(UserWarning, match="ragged/truncated"):
+        pairs = tq.fit_pairwise_gmms(trunc, n_components=1)
+    assert len(pairs) == 2
+    import warnings as _w
+
+    with _w.catch_warnings(record=True) as w:  # clean data must not raise the ragged warning
+        _w.simplefilter("always")
+        tq.fit_pairwise_gmms(data, n_components=1)
+    assert not any("ragged" in str(x.message) for x in w)
+
+
+def test_fit_pairwise_all_missing_pair_raises():
+    data = _gaussian_example_samples(2000, seed=4)
+    # A threshold above every V_2 reveals no V_1 at all -> pair (V_2, V_1) unfittable.
+    trunc = tq.simulate_incumbent_truncation(data, [data[:, 0].max() + 1.0, 0.0])
+    with pytest.raises(ValueError, match="no row reveals both"):
+        tq.fit_pairwise_gmms(trunc, n_components=1)
+
+
+def test_ragged_fit_beats_complete_case_under_truncation():
+    # The validation harness: truncate a clean draw with a *loose* incumbent (tau below the
+    # true thresholds, so v* stays identified), then check ragged fitting recovers the clean
+    # thresholds while naive complete-case fitting is biased on the level whose response is
+    # truncated (v_2^*, whose conditional's outcome V_1 complete-case cuts at tau_1).
+    import warnings as _w
+
+    data = _gaussian_example_samples(300_000, seed=0)
+    c, t = np.array([0.05, 0.1]), 1.0
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        v_clean, _ = tq.train_tarquin(tq.fit_pairwise_gmms(data, n_components=1), c, t)
+        trunc = tq.simulate_incumbent_truncation(data, [0.0, 0.0])  # loose incumbent
+        v_ragged, _ = tq.train_tarquin(tq.fit_pairwise_gmms(trunc, n_components=1), c, t)
+        cc = trunc[np.all(np.isfinite(trunc), axis=1)]              # complete-case (fully revealed)
+        v_cc, _ = tq.train_tarquin(tq.fit_pairwise_gmms(cc, n_components=1), c, t)
+    err_ragged = abs(v_ragged[0] - v_clean[0])   # index 0 = v_2^*
+    err_cc = abs(v_cc[0] - v_clean[0])
+    assert err_ragged < err_cc            # ragged removes the response-truncation bias
+    assert err_ragged < 0.05              # and lands near the clean threshold (~0.2886)
+    assert v_clean[0] == pytest.approx(0.2886, abs=0.02)  # sanity: clean recovers the analytic v_2*
+
+
+def test_diagnose_saturation_flags_cost_trivial():
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")  # zero cost -> -inf saturation warnings
+        v_star, tab = tq.train_tarquin(pairs, np.array([0.0, 0.0]), t=1.0, monotone="off")
+    out = tq.diagnose_saturation(v_star, tab, np.array([0.0, 0.0]))
+    assert out["cost_trivial"] is True
+    assert all(lv["status"].startswith("always_proceed") for lv in out["levels"])
+    assert "cost-trivial" in out["summary"]
+
+
+def test_diagnose_saturation_finite_not_trivial():
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    v_star, tab = tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0)
+    out = tq.diagnose_saturation(v_star, tab, np.array([0.05, 0.1]))
+    assert out["cost_trivial"] is False
+    assert any(lv["status"] == "finite" for lv in out["levels"])
+    with pytest.raises(ValueError, match="length 2"):
+        tq.diagnose_saturation(v_star, tab, np.array([0.05, 0.1, 0.1]))
+
+
 def test_evaluate_policy_mc_hand_computed():
     # Lock the cost accounting against a payoff computed by hand on 3 deterministic rows.
     # Book (col 0, col 1); v* = (1.0 for col 0, 0.0 = t for col 1); acquiring col 1 costs 2.
