@@ -852,6 +852,83 @@ def test_underresolved_grid_warns():
     assert not any("under-resolves" in str(x.message) for x in rec)
 
 
+# --- fixes from the fourth review -------------------------------------------
+
+
+def test_diagnose_saturation_rejects_bounds_tab():
+    # A bounds-mode tab carries 'p_lo'/'p_hi', not 'p'; diagnose_saturation must reject it
+    # with a clear message rather than KeyError on tab["p"].
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    v_lo, _, tab = tq.train_tarquin(
+        pairs, np.array([0.05, 0.1]), t=1.0, identification="bounds")
+    with pytest.raises(ValueError, match="point-mode tab"):
+        tq.diagnose_saturation(v_lo, tab, np.array([0.05, 0.1]))
+
+
+def test_diagnose_sufficiency_untestable_is_nan():
+    # Fewer than 3 columns -> no interior triple -> nothing testable. max_abs must be NaN,
+    # not a falsely reassuring 0.0 (which would read as "perfectly Markov").
+    out = tq.diagnose_sufficiency(tq.make_demo_data()[:, :2])
+    assert out["partial_corr"].shape == (0,)
+    assert np.isnan(out["max_abs"])
+
+
+def test_diagnose_fosd_untestable_is_nan():
+    # A single column has no adjacent pair to evaluate; max must be NaN, not 0.0.
+    out = tq.diagnose_fosd(tq.make_demo_data()[:, :1])
+    assert np.isnan(out["max"])
+
+
+@pytest.mark.slow
+def test_clamp_reports_at_support_edge_even_with_zero_cost():
+    # The clamp contract: a threshold resolving below the identified support is reported at the
+    # edge a_n. With a zero step cost the pessimistic floor below a_n is exactly 0, so reading
+    # the grid sign change naively would saturate to -inf; the resolved value must instead be a_n.
+    import warnings as _w
+
+    data = _gaussian_example_samples(200_000, seed=0)
+    t = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        pairs = tq.fit_pairwise_gmms(tq.simulate_incumbent_truncation(data, [0.5, 0.0]),
+                                     n_components=1)
+        a2 = pairs[1].tarquin_support_lo_                 # identified edge of V_2
+        # c[0] is the (zero) cost at the truncated V_2 level; c[1] the V_0 cost.
+        v_clamp, _ = tq.train_tarquin(pairs, np.array([0.0, 0.1]), t=t, extrapolation="clamp")
+    assert np.isfinite(v_clamp[0])                        # not -inf despite the zero cost
+    assert v_clamp[0] == pytest.approx(a2, abs=0.05)      # reported conservatively at the edge
+
+
+def test_n3_fitted_pairwise_path_trains():
+    # Exercise the 4-level grid-union recursion on *fitted* (not analytic) pairs -- the rest of
+    # the suite only hits N=3 from a hand-built joint GMM. Samples come from an AR(1) Gaussian
+    # chain (Markov + FOSD by construction), so the fit is well posed.
+    g = _ar1_chain_gmm(rho=0.7, d=4)
+    rng = np.random.default_rng(0)
+    X = rng.multivariate_normal(g.means_[0], g.covariances_[0], size=40_000)
+    pairs = tq.fit_pairwise_gmms(X, n_components=range(1, 4))
+    assert len(pairs) == 3
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")  # cost-trivial upstream levels may saturate; not the point here
+        v_star, tab = tq.train_tarquin(pairs, np.array([0.02, 0.02, 0.02]), t=0.0)
+    assert v_star.shape == (4,)
+    assert len(tab["grids"]) == 4
+    assert v_star[3] == pytest.approx(0.0, abs=1e-9)      # v_0^* = t
+    for p in tab["p"]:
+        assert np.all(np.diff(p) >= -1e-9)                # nondecreasing (Prop. 3)
+
+
+def test_holdout_split_test_size_exact_under_rounding():
+    # Test-set size must be exactly round(n * test_frac) for fractions where banker's rounding
+    # would otherwise make (n - round(n*(1-frac))) disagree (odd n, frac=0.5).
+    data = tq.make_demo_data()[:2055]                     # odd row count
+    train, test = tq.holdout_split(data, test_frac=0.5, seed=0)
+    assert test.shape[0] == round(2055 * 0.5)
+    assert train.shape[0] + test.shape[0] == 2055
+
+
 def test_evaluate_policy_mc_hand_computed():
     # Lock the cost accounting against a payoff computed by hand on 3 deterministic rows.
     # Book (col 0, col 1); v* = (1.0 for col 0, 0.0 = t for col 1); acquiring col 1 costs 2.
