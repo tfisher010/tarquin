@@ -22,7 +22,8 @@ Two structural facts drive the implementation:
 from __future__ import annotations
 
 import warnings
-from typing import Literal
+from collections.abc import Sequence
+from typing import Literal, Union
 
 import numpy as np
 from sklearn.isotonic import isotonic_regression
@@ -46,6 +47,9 @@ __all__ = [
     "bootstrap_thresholds",
     "make_demo_data",
 ]
+
+# `n_components` is either a fixed count or a set of candidates selected per fit by BIC.
+NComponents = Union[int, Sequence[int]]
 
 _INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
 
@@ -227,19 +231,21 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
         return p  # nondecreasing up to numerical noise
     n_viol = int((diffs < -tol).sum())
     rel = -worst / max(1.0, float(np.ptp(p)))  # worst dip as a fraction of the value range
-    severity = (
-        "consistent with finite-sample GMM wiggle (projection recovers the monotone "
-        "estimator)"
-        if rel < 1e-2
-        else "large relative to the value range, suggesting a genuine FOSD violation in "
-        "the modeled conditionals; then S_n need not be an interval and the "
-        "single-threshold rule may be unreliable even after projection"
-    )
+    # NB: the *magnitude* of this dip does NOT reliably indicate a true FOSD violation.
+    # Prop. 3 guarantees monotonicity only under stochastic monotonicity (FOSD), but a
+    # fitted GMM does not enforce FOSD, so finite-sample wiggle can break monotonicity of
+    # the estimated p_n^T even on FOSD-true data -- and empirically that wiggle is often
+    # *larger* (relative to the value range) than the dip a genuinely non-FOSD conditional
+    # produces, so a magnitude cutoff here would misclassify both ways. We therefore report
+    # the dip factually and defer the actual data-level FOSD question to `diagnose_fosd`.
     msg = (
         f"p_{level}^T is not nondecreasing (min step {worst:.3g} < -{tol:.1g}, "
-        f"{n_viol} violating point(s), rel. magnitude {rel:.2g}); this is {severity}. "
-        "The stochastic-monotonicity (FOSD) assumption (Prop. 3) appears violated by the "
-        "fitted conditionals."
+        f"{n_viol} violating point(s), {rel:.2g} of the value range). Prop. 3 says the "
+        "true p_n^T is monotone under stochastic monotonicity (FOSD); a fitted GMM does "
+        "not enforce FOSD, so finite-sample wiggle alone can cause this. This dip's size "
+        "is not itself evidence of a true FOSD violation -- run `diagnose_fosd` on the "
+        "data for that. If FOSD genuinely fails, S_n need not be an interval and the "
+        "single-threshold rule is unreliable even after projection."
     )
     if mode == "raise":
         raise ValueError(msg)
@@ -252,12 +258,23 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
 
 def _warn_if_near_edge(v: float, grid: np.ndarray, level: int) -> None:
     """Warn when a threshold is unresolved within the grid: a finite value within 0.1%
-    of an edge, or a low-saturated -inf (p_n^T >= 0 already at the grid floor)."""
+    of an edge, or a saturated endorsement set (-inf: p_n^T >= 0 at the grid floor;
+    +inf: p_n^T < 0 at the grid ceiling)."""
     if v == -np.inf:
         warnings.warn(
             f"v_{level}^* saturated to -inf: p_{level}^T >= 0 at the grid floor "
             f"{grid[0]:.4g}, so the endorsement set covers the whole modeled support. "
             "If you expected a finite threshold, widen `halfwidth` / raise `grid_size`.",
+            stacklevel=3,
+        )
+        return
+    if v == np.inf:
+        warnings.warn(
+            f"v_{level}^* saturated to +inf: p_{level}^T < 0 at the grid ceiling "
+            f"{grid[-1]:.4g}, so the endorsement set is empty (never proceed). This is "
+            "usually genuine (cost exceeds the option value), but a too-narrow grid top "
+            "can also produce it; if you expected a finite threshold, widen `halfwidth` / "
+            "raise `grid_size`.",
             stacklevel=3,
         )
         return
@@ -318,7 +335,10 @@ def train_tarquin(
         Tightness / overhead parameter.
     halfwidth, grid_size : grid covers each marginal's mean +- halfwidth*std with
         `grid_size` points. Widen/refine if thresholds sit near a grid edge (a
-        warning is emitted when they do).
+        warning is emitted when they do). Cost note: the recursion is linear in N
+        *levels*, but each level integrates a dense (grid_size, grid_size) conditional
+        per mixture component, so runtime is O(N * K * grid_size^2) and peak memory is
+        O(grid_size^2). Doubling grid_size quadruples both; raise it deliberately.
     monotone : how to handle a value function p_n^T that fails to be nondecreasing.
         Prop. 3 guarantees monotonicity only under stochastic monotonicity (FOSD),
         which a fitted GMM does not enforce; even on FOSD-true data, finite-sample
@@ -395,7 +415,7 @@ def train_tarquin(
     return np.array(v_star_asc[::-1]), {"grids": grids, "p": p}
 
 
-def infer_tarquin(v_star, v) -> np.ndarray:
+def infer_tarquin(v_star: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Algorithm 2 (inference).
 
     Walks from the highest-index prophecy down. Sets r_n = 1 while v_n > v_n^*;
@@ -463,7 +483,7 @@ def _fit_one_gmm(X, n_components, random_state, covariance_type, **kwargs):
 
 def fit_pairwise_gmms(
     data,
-    n_components=5,
+    n_components: NComponents = 5,
     random_state: int = 0,
     covariance_type: Literal["full", "tied", "diag", "spherical"] = "full",
     **kwargs,
@@ -496,7 +516,7 @@ def fit_pairwise_gmms(
 
 def fit_joint_gmm(
     data,
-    n_components=10,
+    n_components: NComponents = 10,
     random_state: int = 0,
     covariance_type: Literal["full", "tied", "diag", "spherical"] = "full",
     **kwargs,
@@ -738,7 +758,7 @@ def bootstrap_thresholds(
     t: float,
     *,
     n_boot: int = 200,
-    n_components=5,
+    n_components: NComponents = 5,
     ci: float = 0.95,
     seed: int = 0,
     fit_kwargs: dict | None = None,
@@ -866,8 +886,10 @@ if __name__ == "__main__":
         print(f"  cols {book}  v*={np.round(v_ab, 3).tolist()}  E[pi]={mean_pi:+.4f}")
 
     # --- fit_pairwise_gmms smoke test on deterministic synthetic data ---
+    # BIC-select the component count per pair rather than fixing it: on ~2k rows a fixed
+    # 10-component 2-D fit is over-parameterized and injects spurious p_n^T wiggle.
     arr = make_demo_data()
-    data_pairs = fit_pairwise_gmms(arr, n_components=10)
+    data_pairs = fit_pairwise_gmms(arr, n_components=range(1, 11))
     # Costs/overhead are scaled to this data (V_0 ~ O(100)); with the example's
     # tiny c/t the policy would just "always proceed" (threshold at the grid floor).
     t_data = float(np.median(arr[:, 2]))
@@ -879,13 +901,16 @@ if __name__ == "__main__":
 
     # --- fit-on-train, score-on-holdout (avoids optimistic in-sample bias) ---
     train, test = holdout_split(arr, test_frac=0.3, seed=0)
-    v_holdout, _ = train_tarquin(fit_pairwise_gmms(train, n_components=10), c_data, t_data)
+    train_pairs = fit_pairwise_gmms(train, n_components=range(1, 11))
+    v_holdout, _ = train_tarquin(train_pairs, c_data, t_data)
     cost_cols = np.array([np.nan, c_data[0], c_data[1]])
     pi_test = evaluate_policy_mc(test, (0, 1, 2), v_holdout, cost_cols, t_data)
     print(f"holdout E[pi] on {test.shape[0]} test rows: {pi_test.mean():+.3f}")
 
     # --- bootstrap CIs for the thresholds (fit/sampling uncertainty) ---
-    boot = bootstrap_thresholds(arr, c_data, t_data, n_boot=50, n_components=10, seed=0)
+    # Keep n_components scalar here (a per-replicate BIC sweep would multiply the cost by
+    # the candidate count); 5 is modest enough to avoid the over-parameterized wiggle.
+    boot = bootstrap_thresholds(arr, c_data, t_data, n_boot=50, n_components=5, seed=0)
     for name, i in (("v_2*", 0), ("v_1*", 1)):
         print(f"{name}: point {boot['point'][i]:.2f}, "
               f"95% CI [{boot['ci_low'][i]:.2f}, {boot['ci_high'][i]:.2f}] "
