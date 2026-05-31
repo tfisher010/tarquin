@@ -387,10 +387,16 @@ def _level_integral(pair: GaussianMixture, g_n: np.ndarray, g_prev: np.ndarray,
     off-grid tail of the component carries the same (p_prev)^+ average as the captured bulk.
     In the grid interior every component is covered to ~1 (default +-10 sigma, off-grid mass
     ~1e-23), so this is a no-op. It bites only at extreme v_n, where a strongly-correlated
-    component's conditional mean is pushed past a grid edge and only one tail is seen; there
-    p_n^T is biased. That never affects the threshold, which is read at the bulk sign change
-    of a monotone p_n^T, far from those edges -- but it is an approximation, not exact
-    quadrature, and a value read at the very edge of the grid should be treated accordingly.
+    component's conditional mean is pushed past a grid edge and only one tail is seen. The
+    bias is one-sided and downward at high v_n: the cut-off tail is the *upper* one, exactly
+    where (p_prev)^+ is largest (p_prev is increasing), and the limiting case -- a component
+    whose conditional mean clears the grid ceiling, so mass ~ 0 and `np.divide` returns 0 --
+    zeroes out the contribution that should be the largest. So this under-states p_n^T near
+    the top of the grid, not just "biases" it symmetrically. It does not reach the threshold,
+    which is read at the bulk sign change of a monotone p_n^T far from the ceiling (and
+    `_warn_if_near_edge` flags a threshold that lands close to an edge); but it is an
+    approximation, not exact quadrature, and a value read at the very edge should be treated
+    accordingly.
     """
     weights, means, sigmas = _conditional_params(pair, g_n)  # (G,K),(G,K),(K,)
     tw = _trapz_weights(g_prev.size)
@@ -998,6 +1004,11 @@ def diagnose_sufficiency(data) -> dict:
     re-examine the ordering / construction of V (these are scale-free correlations, so
     the cutoff is data-agnostic, unlike `diagnose_fosd`'s CDF-step magnitude).
 
+    NaN-safe for ragged (truncated) samples: each triple is computed on its own
+    complete-case rows (those revealing all three columns); a triple with < 2 such rows
+    yields NaN rather than silently propagating a NaN from `np.corrcoef`. "max_abs"
+    ignores NaN entries (NaN only if every triple was unidentified).
+
     Returns dict with "partial_corr" (one entry per interior V_n, top-down) and "max_abs".
     """
     data = np.asarray(data, dtype=float)
@@ -1005,13 +1016,20 @@ def diagnose_sufficiency(data) -> dict:
     pcs = []
     for j in range(1, D - 1):
         x, z, y = data[:, j - 1], data[:, j], data[:, j + 1]  # outer, middle, outer
+        m = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)  # per-triple complete case
+        if int(m.sum()) < 2:
+            pcs.append(float("nan"))
+            continue
+        x, y, z = x[m], y[m], z[m]
         r_xy = np.corrcoef(x, y)[0, 1]
         r_xz = np.corrcoef(x, z)[0, 1]
         r_yz = np.corrcoef(y, z)[0, 1]
         denom = np.sqrt(max((1 - r_xz**2) * (1 - r_yz**2), np.finfo(float).tiny))
         pcs.append((r_xy - r_xz * r_yz) / denom)
     pc = np.array(pcs)
-    return {"partial_corr": pc, "max_abs": float(np.abs(pc).max()) if pc.size else 0.0}
+    finite = np.abs(pc[np.isfinite(pc)])
+    max_abs = float(finite.max()) if finite.size else (float("nan") if pc.size else 0.0)
+    return {"partial_corr": pc, "max_abs": max_abs}
 
 
 def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
@@ -1032,6 +1050,11 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
     noise; a violation of several tenths (as the U-shaped non-FOSD fixture produces)
     means the single-threshold rule is unreliable for that pair.
 
+    NaN-safe for ragged (truncated) samples: each pair is binned on its own complete-case
+    rows (those revealing both columns). A pair with fewer than `n_bins` such rows cannot
+    be binned and yields NaN -- NOT 0.0, which would read as a falsely reassuring "no
+    violation" on data the check could not actually evaluate. "max" ignores NaN entries.
+
     Returns dict with "violation" (one per adjacent pair, README order (V_N,V_{N-1})..) and
     "max".
     """
@@ -1040,6 +1063,11 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
     viols = []
     for c in range(D - 1):
         cond, outc = data[:, c], data[:, c + 1]  # V_n, V_{n-1}
+        m = np.isfinite(cond) & np.isfinite(outc)  # per-pair complete case (ragged-safe)
+        cond, outc = cond[m], outc[m]
+        if cond.size < n_bins:  # too few revealed rows to bin -> unidentified, not "clean"
+            viols.append(float("nan"))
+            continue
         edges = np.quantile(cond, np.linspace(0.0, 1.0, n_bins + 1))
         edges[-1] = np.inf  # right edge open so the max lands in the last bin
         idx = np.clip(np.searchsorted(edges, cond, side="right") - 1, 0, n_bins - 1)
@@ -1053,7 +1081,9 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
         worst = float(np.nanmax(np.maximum(steps, 0.0))) if np.isfinite(steps).any() else 0.0
         viols.append(worst)
     viol = np.array(viols)
-    return {"violation": viol, "max": float(viol.max()) if viol.size else 0.0}
+    finite = viol[np.isfinite(viol)]
+    max_viol = float(finite.max()) if finite.size else (float("nan") if viol.size else 0.0)
+    return {"violation": viol, "max": max_viol}
 
 
 def diagnose_payoff_calibration(
