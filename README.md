@@ -398,7 +398,7 @@ The implementation reproduces the Gaussian example above to four decimal places 
 All public functions take and return columns in README order (V_N, ..., V_0).
 
 *Core.*
-- `train_tarquin(pairs, c, t)` -> `(v_star, tab)`. Algorithm 1: thresholds `v_star = (v_N*, ..., v_0*)` by grid value-function iteration. `tab` holds the grids and tabulated value functions.
+- `train_tarquin(pairs, c, t)` -> `(v_star, tab)`. Algorithm 1: thresholds `v_star = (v_N*, ..., v_0*)` by grid value-function iteration. `tab` holds the grids and tabulated value functions. With `identification="bounds"` returns `(v_lo, v_hi, tab)` interval thresholds for a truncated sample; see [Deployed and truncated samples](#deployed-and-truncated-samples).
 - `infer_tarquin(v_star, v)` -> `r`. Algorithm 2: the {0,1} purchase decisions for one draw.
 
 *Modeling the conditionals.*
@@ -506,13 +506,14 @@ However, in general the VOI is simply the difference between the values of the p
 
 The game assumes the vendor hands the buyer an i.i.d. draw from the full joint. A sample collected from a system *already running* a threshold policy is not that: a prophecy $V_{n-1}$ is revealed only for draws that proceeded past step $n$ ($V_n$ above the incumbent threshold), so the realized sample is **one-sided-truncated by the very thresholds being optimized**. Fitting each conditional on the fully-revealed (complete-case) rows truncates the *response* $V_{n-1}$ from below and biases $f_{n-1|n}$ exactly in the low-$V_n$ region where $v_n^\ast$ lives; the observed symptom is upstream thresholds collapsing to $-\infty$.
 
-Three tools address the *identified* part of this problem:
+Four tools address it:
 
-- **`fit_pairwise_gmms` is selection-aware.** Pass a ragged array with `np.nan` where a prophecy was not acquired, and each pair $(V_n, V_{n-1})$ is fit on the rows that reveal *both* (proceeded past step $n$), not the fully-revealed intersection. By sufficiency, given $V_n=v_n$ the outcome $V_{n-1}$ is independent of the upstream survival, so this is unbiased wherever $V_n$ was revealed. (`fit_joint_gmm` cannot do this: a joint fit needs every dimension at once, so it drops incomplete rows and warns; prefer the pairwise fit on ragged data.)
+- **`fit_pairwise_gmms` is selection-aware.** Pass a ragged array with `np.nan` where a prophecy was not acquired, and each pair $(V_n, V_{n-1})$ is fit on the rows that reveal *both* (proceeded past step $n$), not the fully-revealed intersection. By sufficiency, given $V_n=v_n$ the outcome $V_{n-1}$ is independent of the upstream survival, so this is unbiased wherever $V_n$ was revealed. It also records each pair's identified lower edge $a_n$ (the smallest observed $V_n$) on the fitted object, which `train_tarquin` reads. (`fit_joint_gmm` cannot do this: a joint fit needs every dimension at once, so it drops incomplete rows and warns; prefer the pairwise fit on ragged data.)
 - **`simulate_incumbent_truncation(data, thresholds)`** applies an incumbent threshold policy to a clean full-joint sample, producing the ragged sample a deployed system would collect. It is the validation harness: ragged fitting on its output recovers the clean thresholds, complete-case fitting does not.
 - **`diagnose_saturation(v_star, tab, c)`** explains a saturated $\pm\infty$ threshold; in particular whether the cost is simply not binding against the payoff spread (a cost-trivial regime where only the terminal $v_0^\ast=t$ matters), as opposed to a tuned recommendation.
+- **`train_tarquin(..., identification="bounds")`** returns the threshold as a $(v_{lo}, v_{hi})$ interval rather than a point, honest about the region the truncated sample cannot identify (below $a_n$). Under the FOSD prior the unidentified continuation value is pinned into $[-c_{n-1}, p_n^\ast(a_n)]$, giving an optimistic envelope (clamped to the support-edge value) and a pessimistic one (continuation value $0$); these propagate up the recursion. For a single number instead, `extrapolation="clamp"` reports a threshold below support conservatively at $a_n$, and `extrapolation="flag"` warns when the resolved threshold depends on extrapolated mass (`"gmm"`, the default, extrapolates freely as before).
 
-**Identifiability is asymmetric.** $v_n^\ast$ is recoverable when the incumbent was too *loose* ($v_n^\ast$ above its threshold, in the revealed region) but unidentified when it was too *tight* ($v_n^\ast$ below it, where the sample has zero overlap). The below-threshold region is reachable only by extrapolation under the FOSD prior; a monotone-bounded extrapolation and a partial-identification (interval) mode are future work. On a truncated sample, treat a saturated threshold as a bound, not a point. (See `TARQUIN_EXTENSIONS.md` for the fuller roadmap.)
+**Identifiability is asymmetric.** $v_n^\ast$ is recoverable when the incumbent was too *loose* ($v_n^\ast$ above its threshold, in the revealed region; the bounds collapse to a point) but unidentified when it was too *tight* ($v_n^\ast$ below it, where the sample has zero overlap; the bounds open up to $[-\infty, a_n]$). On a truncated sample, treat a saturated threshold as a bound, not a point, and prefer `identification="bounds"`. (See `TARQUIN_EXTENSIONS.md` for the fuller roadmap.)
 
 ## Future work
 
