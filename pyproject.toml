@@ -26,7 +26,12 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.21",
-    "scikit-learn>=1.0",
+    # Upper bound is deliberate: tarquin assigns scikit-learn's private fitted attributes
+    # directly (weights_/means_/covariances_/precisions_cholesky_) and indexes covariances_
+    # as (K, D, D). That is an internal contract -- notably the precision-Cholesky layout --
+    # which can shift across minor releases. Widen the ceiling only after testing the
+    # GMM-construction paths (_as_full_covariance, marginalize_gmm) against the newer sklearn.
+    "scikit-learn>=1.0,<1.8",
 ]
 
 [project.optional-dependencies]
