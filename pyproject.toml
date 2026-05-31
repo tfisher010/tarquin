@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "ruff>=0.4", "mypy>=1.8"]
+dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.4", "mypy>=1.8"]
 examples = ["matplotlib>=3.4"]
 
 [project.urls]
@@ -58,6 +58,14 @@ target-version = "py39"
 # Conservative, bug-catching set: pyflakes (F) + pycodestyle errors (E). These flag
 # real defects (undefined names, unused imports, syntax) without enforcing style churn.
 select = ["E", "F"]
+
+[tool.coverage.run]
+source = ["tarquin"]
+
+[tool.coverage.report]
+# The __main__ demo block is exercised by the CI "Smoke-test the worked example" step
+# (python tarquin.py), not by pytest, so exclude it from the unit-test coverage gate.
+exclude_also = ['if __name__ == .__main__.:']
 
 [tool.mypy]
 # Light type check on the module: enough to catch real defects (e.g. a name reused as
