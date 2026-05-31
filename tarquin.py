@@ -573,6 +573,14 @@ def train_tarquin(
 
         p.append(p_n)
         v_n = _threshold_from_grid(g_n, p_n)
+        if extrapolation == "clamp" and below and v_n < a_n:
+            # Conservative contract: a threshold that resolves below the identified support is
+            # reported at the edge a_n. Reading it off the grid directly is not enough -- with a
+            # zero step cost the pessimistic floor below a_n is exactly 0, so `_threshold_from_grid`
+            # sees p_n[0] >= 0 and returns -inf ("always proceed") rather than a_n. Clamp the
+            # resolved value instead, which also handles a finite threshold interpolated a hair
+            # below a_n. (+inf passes through unchanged: max(+inf, a_n) = +inf.)
+            v_n = a_n
         if extrapolation == "flag" and np.isfinite(a_n) and v_n < a_n:
             warnings.warn(
                 f"v_{n}^* = {v_n:.4g} lies below the identified support edge a_{n} = "
@@ -1019,6 +1027,8 @@ def diagnose_sufficiency(data) -> dict:
     ignores NaN entries (NaN only if every triple was unidentified).
 
     Returns dict with "partial_corr" (one entry per interior V_n, top-down) and "max_abs".
+    "max_abs" is NaN when nothing was testable (fewer than 3 columns, so no interior triple
+    exists, or every triple was unidentified) -- not 0.0, which would read as a clean pass.
     """
     data = np.asarray(data, dtype=float)
     D = data.shape[1]
@@ -1037,7 +1047,10 @@ def diagnose_sufficiency(data) -> dict:
         pcs.append((r_xy - r_xz * r_yz) / denom)
     pc = np.array(pcs)
     finite = np.abs(pc[np.isfinite(pc)])
-    max_abs = float(finite.max()) if finite.size else (float("nan") if pc.size else 0.0)
+    # NaN, not 0.0, when nothing was testable (fewer than 3 columns -> no interior triple, or
+    # every triple unidentified): a 0.0 here reads as "perfectly Markov" when it actually means
+    # "no constraint was checked". A genuinely clean chain still yields a small finite max.
+    max_abs = float(finite.max()) if finite.size else float("nan")
     return {"partial_corr": pc, "max_abs": max_abs}
 
 
@@ -1091,7 +1104,10 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
         viols.append(worst)
     viol = np.array(viols)
     finite = viol[np.isfinite(viol)]
-    max_viol = float(finite.max()) if finite.size else (float("nan") if viol.size else 0.0)
+    # NaN, not 0.0, when nothing was testable (fewer than 2 columns -> no adjacent pair, or
+    # every pair unidentified): a 0.0 would falsely read as "no FOSD violation". A genuinely
+    # clean pair still produces a finite (often small but nonzero) violation entry.
+    max_viol = float(finite.max()) if finite.size else float("nan")
     return {"violation": viol, "max": max_viol}
 
 
@@ -1258,6 +1274,12 @@ def diagnose_saturation(v_star, tab, c) -> dict:
     """
     v_star = np.asarray(v_star, dtype=float)
     c = np.asarray(c, dtype=float)
+    if "p" not in tab:
+        raise ValueError(
+            "diagnose_saturation needs a point-mode tab (the dict with key 'p'); got a "
+            "bounds-mode tab (identification='bounds' returns 'p_lo'/'p_hi' instead). Re-run "
+            "train_tarquin with the default identification='point' to inspect saturation."
+        )
     p = tab["p"]
     N = len(v_star) - 1
     if c.shape != (N,):
@@ -1429,7 +1451,12 @@ def holdout_split(data, test_frac: float = 0.3, seed: int = 0):
         raise ValueError(f"test_frac must be in (0, 1); got {test_frac}")
     n = data.shape[0]
     perm = np.random.default_rng(seed).permutation(n)
-    cut = int(round(n * (1.0 - test_frac)))
+    # Size the test set directly so it is exactly round(n * test_frac) for every fraction.
+    # Sizing the *train* set as round(n * (1 - test_frac)) and taking the remainder can leave
+    # the test set one row off the obvious expectation under banker's rounding (e.g. odd n,
+    # test_frac=0.5: round(n*0.5) vs n - round(n*0.5) disagree).
+    n_test = int(round(n * test_frac))
+    cut = n - n_test
     return data[perm[:cut]], data[perm[cut:]]
 
 
@@ -1466,7 +1493,8 @@ def bootstrap_thresholds(
     given `seed`), so the reported spread captures *both* resampling (data) uncertainty and
     EM-initialization variance. To isolate resampling variance only, pin the fit by passing
     `fit_kwargs={"random_state": ...}`; then every replicate refits with that fixed seed. The
-    full-sample `point` estimate always uses the `fit_pairwise_gmms` default seed.
+    full-sample `point` estimate uses that pinned `random_state` if `fit_kwargs` supplies one,
+    otherwise the `fit_pairwise_gmms` default seed.
 
     Returns dict with:
       "point"    : (N+1,) v* on the full sample.
