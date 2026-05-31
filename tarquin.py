@@ -43,6 +43,8 @@ __all__ = [
     "evaluate_policy_mc",
     "diagnose_sufficiency",
     "diagnose_fosd",
+    "diagnose_saturation",
+    "simulate_incumbent_truncation",
     "holdout_split",
     "bootstrap_thresholds",
     "make_demo_data",
@@ -503,13 +505,41 @@ def fit_pairwise_gmms(
 
     Any `covariance_type` is accepted: a non-"full" fit is densified to the (K, D, D)
     "full" layout the recursion indexes, so all four types feed `train_tarquin`.
+
+    Selection-aware (ragged) fitting: `data` may carry `np.nan` where a prophecy was not
+    acquired -- the shape a sample collected under an incumbent threshold policy actually
+    has (V_{n-1} is revealed only for draws that proceeded past step n). Each pair is then
+    fit on the rows that reveal *both* its prophecies (proceeded past step n), NOT the
+    fully-revealed intersection. By sufficiency this is unbiased wherever V_n was revealed;
+    fitting the complete-case intersection instead would truncate the response V_{n-1} from
+    below and bias the conditional in the low-V_n region where v_n^* sits. The conditional
+    is unidentified below the incumbent threshold (no overlap), so a saturated threshold on
+    a truncated sample is a bound, not a point -- check it with `diagnose_saturation`.
     """
-    data = np.asarray(data)
+    data = np.asarray(data, dtype=float)
     N = data.shape[1] - 1
+    n_rows = data.shape[0]
     pairs = []
     for n in range(1, N + 1):
         cols = [N - n, N - n + 1]  # (V_n, V_{n-1}) in README column order
-        gmm = _fit_one_gmm(data[:, cols], n_components, random_state, covariance_type, **kwargs)
+        sub = data[:, cols]
+        obs = np.all(np.isfinite(sub), axis=1)  # rows revealing BOTH prophecies of this pair
+        n_obs = int(obs.sum())
+        if n_obs == 0:
+            raise ValueError(
+                f"pair (V_{n}, V_{n - 1}): no row reveals both prophecies; cannot fit the "
+                "conditional f_(n-1|n). The sample is truncated above this pair's step."
+            )
+        if n_obs < n_rows:
+            warnings.warn(
+                f"pair (V_{n}, V_{n - 1}): fitting f_(n-1|n) on {n_obs}/{n_rows} rows that "
+                "reveal both prophecies (ragged/truncated sample). The conditional is "
+                "identified only where V_n was revealed; below the incumbent threshold it is "
+                "extrapolated, so treat a saturated v_n^* as a bound and inspect it with "
+                "`diagnose_saturation`.",
+                stacklevel=2,
+            )
+        gmm = _fit_one_gmm(sub[obs], n_components, random_state, covariance_type, **kwargs)
         pairs.append(_as_full_covariance(gmm))
     return pairs
 
@@ -530,8 +560,23 @@ def fit_joint_gmm(
     `n_components` may be an int or a sequence of candidates (selected by BIC). Extra
     sklearn kwargs (`n_init`, `reg_covar`, ...) pass through; for downstream use with
     `pairs_from_joint`/`marginalize_gmm` any `covariance_type` is supported.
+
+    A single joint fit needs every dimension jointly, so rows with any missing prophecy are
+    dropped (complete-case). On a sample truncated by an incumbent policy that discards the
+    low tail and biases the joint; prefer `fit_pairwise_gmms`, which fits each pair on its
+    own observed rows.
     """
-    return _fit_one_gmm(np.asarray(data), n_components, random_state, covariance_type, **kwargs)
+    data = np.asarray(data, dtype=float)
+    obs = np.all(np.isfinite(data), axis=1)
+    n_obs = int(obs.sum())
+    if n_obs < data.shape[0]:
+        warnings.warn(
+            f"fit_joint_gmm: dropping {data.shape[0] - n_obs} row(s) with a missing prophecy "
+            "(complete-case). For a sample truncated by an incumbent policy this discards the "
+            "low tail and biases the joint; prefer `fit_pairwise_gmms` for ragged data.",
+            stacklevel=2,
+        )
+    return _fit_one_gmm(data[obs], n_components, random_state, covariance_type, **kwargs)
 
 
 def pairs_from_joint(gmm_full: GaussianMixture, col_order) -> list[GaussianMixture]:
@@ -736,6 +781,116 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
     return {"violation": viol, "max": float(viol.max()) if viol.size else 0.0}
 
 
+def diagnose_saturation(v_star, tab, c) -> dict:
+    """Explain saturated (+/-inf) thresholds: artifact of a non-binding cost, or a real edge?
+
+    A saturated v_n^* is easy to over-read. `-inf` ("proceed everywhere") and `+inf`
+    ("never proceed") are both legitimate outputs, but on a cost-trivial problem *every*
+    upstream threshold saturates to `-inf` and the only binding decision is the terminal
+    v_0^* = t -- which is not a tuned multi-step policy. This compares each level's cost
+    c_{n-1} against the value of proceeding *before* cost (p_n^T + c_{n-1}) at the saturating
+    grid edge, so a tiny cost fraction flags "cost is not binding" rather than "tuned cut".
+
+    Parameters
+    ----------
+    v_star : (N+1,) thresholds in README order, from `train_tarquin`.
+    tab : the dict returned alongside `v_star` (its "p" holds p_n^T per level).
+    c : (N,) cost vector in README order, as passed to `train_tarquin`.
+
+    Returns dict with:
+      "levels" : per acquisition step n=1..N: {level, threshold, status
+                 ("finite"/"always_proceed (-inf)"/"never_proceed (+inf)"), cost,
+                 option_value_at_edge, edge, cost_fraction}.
+      "cost_trivial" : True iff every upstream threshold saturated to -inf (only the
+                 terminal v_0^* = t binds).
+      "summary" : a one-line human reading.
+    """
+    v_star = np.asarray(v_star, dtype=float)
+    c = np.asarray(c, dtype=float)
+    p = tab["p"]
+    N = len(v_star) - 1
+    if c.shape != (N,):
+        raise ValueError(f"expected c of length {N}, got shape {c.shape}")
+    levels = []
+    statuses: list[str] = []
+    fracs: list[float] = []
+    for n in range(1, N + 1):
+        v = float(v_star[N - n])
+        c_prev = float(c[N - n])  # c_{n-1}
+        pn = np.asarray(p[n], dtype=float)
+        if v == -np.inf:
+            status, edge = "always_proceed (-inf)", "floor"
+            option_edge = float(pn[0]) + c_prev   # value of proceeding before cost, at floor
+        elif v == np.inf:
+            status, edge = "never_proceed (+inf)", "ceiling"
+            option_edge = float(pn[-1]) + c_prev  # ... at ceiling
+        else:
+            status, edge, option_edge = "finite", None, float("nan")
+        if edge is None:
+            frac = float("nan")
+        elif option_edge > 0:
+            frac = c_prev / option_edge
+        else:
+            frac = float("inf")
+        statuses.append(status)
+        fracs.append(frac)
+        levels.append({
+            "level": n, "threshold": v, "status": status, "cost": c_prev,
+            "option_value_at_edge": option_edge, "edge": edge, "cost_fraction": frac,
+        })
+
+    cost_trivial = bool(statuses) and all(s.startswith("always_proceed") for s in statuses)
+    if cost_trivial:
+        worst = max(fracs)
+        summary = (
+            f"All {N} acquisition threshold(s) saturated to -inf (proceed everywhere): only "
+            f"the terminal decision v_0^* = t binds. Cost is at most {worst:.1%} of the value "
+            "of proceeding at the grid floor, so the cost vector is not binding against the "
+            "payoff spread -- a cost-trivial regime, not a tuned multi-step policy. (If V_0 is "
+            "the quantity t already acts on, max E[(V_0 - t)^+] is near-tautological with the "
+            "terminal rule.)"
+        )
+    else:
+        sat = [n for n, s in enumerate(statuses, start=1) if s != "finite"]
+        n_finite = sum(s == "finite" for s in statuses)
+        summary = (
+            f"{n_finite}/{N} acquisition threshold(s) finite; saturated at level(s) "
+            f"{sat or 'none'}. See per-level cost_fraction."
+        )
+    return {"levels": levels, "cost_trivial": cost_trivial, "summary": summary}
+
+
+def simulate_incumbent_truncation(data, thresholds) -> np.ndarray:
+    """Apply an incumbent threshold policy to a full-joint sample, producing the ragged
+    (one-sided-truncated) sample a *deployed* system actually collects.
+
+    In deployment a prophecy is revealed only if the draw proceeded past its step: V_{n-1}
+    is observed iff V_n exceeded the incumbent threshold (and every upstream prophecy did
+    too). This returns a copy of `data` with `np.nan` wherever a draw stopped, so it can be
+    fed straight to the selection-aware `fit_pairwise_gmms` to validate that ragged fitting
+    recovers the thresholds the clean joint would (and that complete-case fitting does not).
+
+    Parameters
+    ----------
+    data : (n, N+1) full-joint sample, columns in README order (V_N, ..., V_0).
+    thresholds : (N,) incumbent thresholds in README order (tau_N, ..., tau_1); thresholds[i]
+        gates revealing column i+1 (i.e. V_N must exceed thresholds[0] to reveal V_{N-1}).
+        There is no threshold on V_N (seen for free) or after V_0 (terminal).
+
+    Returns the ragged array (a float copy with NaNs); missingness is monotone down the chain.
+    """
+    data = np.asarray(data, dtype=float).copy()
+    N = data.shape[1] - 1
+    thr = np.asarray(thresholds, dtype=float)
+    if thr.shape != (N,):
+        raise ValueError(f"expected thresholds of length {N}, got shape {thr.shape}")
+    alive = np.ones(data.shape[0], dtype=bool)
+    for j in range(N):
+        alive = alive & (data[:, j] > thr[j])  # proceed past step (N-j): reveal column j+1
+        data[~alive, j + 1] = np.nan
+    return data
+
+
 def holdout_split(data, test_frac: float = 0.3, seed: int = 0):
     """Shuffle-split rows into (train, test).
 
@@ -894,10 +1049,11 @@ if __name__ == "__main__":
     # tiny c/t the policy would just "always proceed" (threshold at the grid floor).
     t_data = float(np.median(arr[:, 2]))
     c_data = np.array([100.0, 100.0])
-    v_star_data, _ = train_tarquin(data_pairs, c_data, t_data)
+    v_star_data, tab_data = train_tarquin(data_pairs, c_data, t_data)
     print(f"\nfit_pairwise_gmms on make_demo_data() (t={t_data:.1f}, c=100): "
           f"v* = {np.round(v_star_data, 2).tolist()}  "
           "(-inf=always proceed, +inf=never)")
+    print("  diagnose_saturation:", diagnose_saturation(v_star_data, tab_data, c_data)["summary"])
 
     # --- fit-on-train, score-on-holdout (avoids optimistic in-sample bias) ---
     train, test = holdout_split(arr, test_frac=0.3, seed=0)
@@ -915,3 +1071,20 @@ if __name__ == "__main__":
         print(f"{name}: point {boot['point'][i]:.2f}, "
               f"95% CI [{boot['ci_low'][i]:.2f}, {boot['ci_high'][i]:.2f}] "
               f"({boot['n_finite'][i]}/50 finite)")
+
+    # --- deployed/truncated sample: incumbent policy hides the low tail (P0) ---
+    # A *loose* incumbent (tau below the true thresholds) keeps v* identified, so ragged
+    # fitting on the truncated sample should recover the clean ~[0.289, 0.12, 1.0], while
+    # naive complete-case fitting is biased on v_2^* (its response V_1 is cut at tau_1).
+    print("\nTruncated-sample (incumbent policy) demo:")
+    full = rng.multivariate_normal(mu, cov, size=500_000)
+    trunc = simulate_incumbent_truncation(full, thresholds=np.array([0.0, 0.0]))
+    print(f"  observed fraction per column (V_2, V_1, V_0): "
+          f"{np.round(np.isfinite(trunc).mean(axis=0), 2).tolist()}")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # ragged-sample / monotonicity notices
+        v_ragged, _ = train_tarquin(fit_pairwise_gmms(trunc, n_components=1), c, t)
+        cc = trunc[np.all(np.isfinite(trunc), axis=1)]  # naive complete-case (biased)
+        v_cc, _ = train_tarquin(fit_pairwise_gmms(cc, n_components=1), c, t)
+    print(f"  ragged-fit    v* = {np.round(v_ragged, 3).tolist()}  (selection-aware)")
+    print(f"  complete-case v* = {np.round(v_cc, 3).tolist()}  (response-truncation bias)")
