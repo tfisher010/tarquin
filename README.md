@@ -31,19 +31,20 @@ data = tq.make_demo_data()                       # or your own (n_samples, N+1) 
 pairs = tq.fit_pairwise_gmms(data, n_components=range(1, 6))
 
 # Train: thresholds v* = (v_N*, ..., v_0*) for cost vector c = (c_{N-1}, ..., c_0)
-# and overhead t.
-v_star, _ = tq.train_tarquin(pairs, c=np.array([100.0, 100.0]), t=float(np.median(data[:, -1])))
+# and overhead t. These costs land both upstream thresholds at interior values on this data.
+v_star, _ = tq.train_tarquin(pairs, c=np.array([35.0, 30.0]), t=float(np.percentile(data[:, -1], 40)))
 
 # Infer: which prophecies should the buyer purchase for a new draw v = (v_N, ..., v_0)?
 r = tq.infer_tarquin(v_star, data[0])
 
 # Evaluate honestly: fit on train, score the policy on a holdout (not the fitting sample).
 train, test = tq.holdout_split(data, test_frac=0.3)
-v_star, _ = tq.train_tarquin(tq.fit_pairwise_gmms(train), c=np.array([100.0, 100.0]), t=80.0)
-pi = tq.evaluate_policy_mc(test, (0, 1, 2), v_star, np.array([np.nan, 100.0, 100.0]), t=80.0)
+t = float(np.percentile(data[:, -1], 40))
+v_star, _ = tq.train_tarquin(tq.fit_pairwise_gmms(train), c=np.array([35.0, 30.0]), t=t)
+pi = tq.evaluate_policy_mc(test, (0, 1, 2), v_star, np.array([np.nan, 35.0, 30.0]), t=t)
 
 # Quantify threshold uncertainty (bootstrap CIs over refit replicates).
-boot = tq.bootstrap_thresholds(data, c=np.array([100.0, 100.0]), t=80.0, n_boot=200)
+boot = tq.bootstrap_thresholds(data, c=np.array([35.0, 30.0]), t=t, n_boot=200)
 ```
 
 The `__main__` block in `tarquin.py` is a fuller example: the worked Gaussian case below, Monte-Carlo policy evaluation, and abridgement ranking. A function-level API reference is in the [API](#api) section.
