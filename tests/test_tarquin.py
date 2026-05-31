@@ -82,8 +82,8 @@ def test_make_demo_data_deterministic_and_shaped():
     assert (a[:, 1] > 0).all()         # V_1 positive
     assert (a[:, 2] < 0).any()         # V_0 can go negative
     r = np.corrcoef(a.T)
-    assert 0.2 < r[0, 1] < 0.5         # adjacent correlations in the right range
-    assert 0.4 < r[1, 2] < 0.7
+    assert 0.7 < r[0, 1] < 0.9         # strong adjacent correlations (~0.82)
+    assert 0.7 < r[1, 2] < 0.9
 
 
 def test_fit_pairwise_then_train_runs():
