@@ -60,6 +60,9 @@ NComponents = Union[int, Sequence[int]]
 _INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
 
 
+# --- Internal numerics: grids, GMM conditionals, value-function recursion ---
+
+
 def _gauss_pdf(x, loc, scale):
     """Normal pdf via numpy (much faster than scipy.stats.norm.pdf on large arrays)."""
     z = (x - loc) / scale
@@ -383,20 +386,10 @@ def _level_integral(pair: GaussianMixture, g_n: np.ndarray, g_prev: np.ndarray,
     component whose conditional mean is pushed toward a grid edge is not under-integrated.
     Returns the integral (before subtracting cost). Shared by the point and bounds paths.
 
-    Caveat on the renormalization: dividing by the on-grid mass is exact only if the
-    off-grid tail of the component carries the same (p_prev)^+ average as the captured bulk.
-    In the grid interior every component is covered to ~1 (default +-10 sigma, off-grid mass
-    ~1e-23), so this is a no-op. It bites only at extreme v_n, where a strongly-correlated
-    component's conditional mean is pushed past a grid edge and only one tail is seen. The
-    bias is one-sided and downward at high v_n: the cut-off tail is the *upper* one, exactly
-    where (p_prev)^+ is largest (p_prev is increasing), and the limiting case -- a component
-    whose conditional mean clears the grid ceiling, so mass ~ 0 and `np.divide` returns 0 --
-    zeroes out the contribution that should be the largest. So this under-states p_n^T near
-    the top of the grid, not just "biases" it symmetrically. It does not reach the threshold,
-    which is read at the bulk sign change of a monotone p_n^T far from the ceiling (and
-    `_warn_if_near_edge` flags a threshold that lands close to an edge); but it is an
-    approximation, not exact quadrature, and a value read at the very edge should be treated
-    accordingly.
+    The on-grid-mass renormalization is exact in the grid interior (off-grid mass ~1e-23 at
+    the default +-10 sigma) and only under-states p_n^T at extreme high v_n, away from the
+    bulk sign change where the threshold is read (`_warn_if_near_edge` flags a near-edge
+    threshold). See README "Implementation" for the full one-sided-bias derivation.
     """
     weights, means, sigmas = _conditional_params(pair, g_n)  # (G,K),(G,K),(K,)
     tw = _trapz_weights(g_prev.size)
@@ -430,13 +423,16 @@ def _resolve_support_lo(pairs: list[GaussianMixture], N: int, support_lo, use_su
     return [float(getattr(pairs[n - 1], "tarquin_support_lo_", -np.inf)) for n in range(1, N + 1)]
 
 
+# --- Core public API: Algorithm 1 (training) and Algorithm 2 (inference) ---
+
+
 def train_tarquin(
     pairs: list[GaussianMixture],
     c: np.ndarray,
     t: float,
     *,
     halfwidth: float = 10.0,
-    grid_size: int = 3000,
+    grid_size: int = 1500,
     monotone: Literal["project", "check", "raise", "off"] = "project",
     identification: Literal["point", "bounds"] = "point",
     extrapolation: Literal["gmm", "clamp", "flag"] = "gmm",
@@ -529,6 +525,16 @@ def train_tarquin(
         )
     if np.any(c < 0):
         raise ValueError(f"cost vector must be nonnegative (README: c in R^N_>=0); got {c}")
+    # `t` is checked for the same reason as `c`: p_0^T = v_0 - t, so a non-finite t poisons
+    # every value function and surfaces only as the opaque isotonic "input contains NaN".
+    if not np.isfinite(t):
+        raise ValueError(f"tightness t must be finite; got {t}")
+    # The grid must have >= 2 points (the trapezoidal step dx = grid[1] - grid[0] is read
+    # directly) and a positive halfwidth (else _build_grids yields a zero-width span).
+    if grid_size < 2:
+        raise ValueError(f"grid_size must be >= 2; got {grid_size}")
+    if not halfwidth > 0:
+        raise ValueError(f"halfwidth must be positive; got {halfwidth}")
 
     if grid_bounds is not None and len(grid_bounds) != N + 1:
         raise ValueError(f"expected grid_bounds of length {N + 1}, got {len(grid_bounds)}")
@@ -936,17 +942,20 @@ def make_demo_data(n: int = 2056, seed: int = 0) -> np.ndarray:
     pushed through strictly increasing marginal transforms. Monotone maps preserve
     both the Markov property and stochastic monotonicity (FOSD), so the data also
     satisfies assumption 2; the worked recursion is therefore well posed on it. The
-    result has positive, right-skewed V_2 and V_1 on an O(100) scale (V_1 floored
-    near 68) and a wider, right-skewed V_0 that can go negative, with adjacent
-    correlations ~0.34 / ~0.55. Columns are in README order (V_2, V_1, V_0).
+    adjacent latent links are strong (~0.85), giving observed adjacent correlations
+    ~0.82 -- enough dependence that the value functions vary with the signal and the
+    upstream thresholds resolve to stable interior values (a weakly-linked chain leaves
+    every p_n^T nearly flat in v_n, so the thresholds saturate). V_2 and V_1 are
+    positive, right-skewed lognormals; V_0 is wider and right-skewed and can go negative.
+    Columns are in README order (V_2, V_1, V_0).
     """
     rng = np.random.default_rng(seed)
     z2 = rng.standard_normal(n)
-    z1 = 0.42 * z2 + np.sqrt(1 - 0.42**2) * rng.standard_normal(n)
-    z0 = 0.66 * z1 + np.sqrt(1 - 0.66**2) * rng.standard_normal(n)
-    v2 = np.exp(4.38 + 0.40 * z2)                 # lognormal: mean ~85, skew ~1.1
-    v1 = 68.0 + np.exp(3.30 + 0.90 * z1)          # floored, heavy right tail
-    v0 = 79.0 + 60.0 * z0 + 8.0 * np.expm1(0.6 * z0)  # strictly increasing, right-skewed; can be <0
+    z1 = 0.85 * z2 + np.sqrt(1 - 0.85**2) * rng.standard_normal(n)
+    z0 = 0.85 * z1 + np.sqrt(1 - 0.85**2) * rng.standard_normal(n)
+    v2 = np.exp(4.20 + 0.40 * z2)                      # lognormal, median ~67, positive skew
+    v1 = np.exp(4.20 + 0.40 * z1)                      # same family, strongly linked to V_2
+    v0 = 90.0 + 55.0 * z0 + 8.0 * np.expm1(0.5 * z0)   # strictly increasing, skewed; can be <0
     return np.column_stack([v2, v1, v0])
 
 
@@ -1453,11 +1462,11 @@ def bootstrap_thresholds(
     Cost note: each replicate is a full fit+train, so wall time is ~`n_boot` ×
     `train_tarquin`; keep `n_components` scalar (not a BIC sweep) for speed.
 
-    Scope note: every replicate refits with the same GMM `random_state` (the
-    `fit_pairwise_gmms` default), so the reported spread captures *resampling* (and
-    hence data) uncertainty but not EM-initialization variance. Pass a
-    `fit_kwargs={"random_state": ...}` per call, or raise `n_init`, if you want the fit's
-    own optimization noise reflected too.
+    Scope note: by default each replicate draws a fresh GMM `random_state` (deterministic
+    given `seed`), so the reported spread captures *both* resampling (data) uncertainty and
+    EM-initialization variance. To isolate resampling variance only, pin the fit by passing
+    `fit_kwargs={"random_state": ...}`; then every replicate refits with that fixed seed. The
+    full-sample `point` estimate always uses the `fit_pairwise_gmms` default seed.
 
     Returns dict with:
       "point"    : (N+1,) v* on the full sample.
@@ -1474,6 +1483,9 @@ def bootstrap_thresholds(
         raise ValueError(f"ci must be in (0, 1); got {ci}")
     data = np.asarray(data)
     fit_kwargs = dict(fit_kwargs or {})
+    # Vary the GMM seed per replicate (so the CI reflects EM-init variance) unless the caller
+    # pinned `random_state`, in which case respect it and isolate resampling variance only.
+    vary_seed = "random_state" not in fit_kwargs
     n = data.shape[0]
     rng = np.random.default_rng(seed)
 
@@ -1485,7 +1497,9 @@ def bootstrap_thresholds(
         warnings.simplefilter("ignore")  # saturation/monotonicity noise per replicate
         for b in range(n_boot):
             idx = rng.integers(0, n, size=n)
-            pairs = fit_pairwise_gmms(data[idx], n_components, **fit_kwargs)
+            rep_kwargs = ({**fit_kwargs, "random_state": int(rng.integers(0, 2**31 - 1))}
+                          if vary_seed else fit_kwargs)
+            pairs = fit_pairwise_gmms(data[idx], n_components, **rep_kwargs)
             samples[b], _ = train_tarquin(pairs, c, t, **train_kwargs)
 
     finite = np.isfinite(samples)
@@ -1562,12 +1576,12 @@ if __name__ == "__main__":
     # 10-component 2-D fit is over-parameterized and injects spurious p_n^T wiggle.
     arr = make_demo_data()
     data_pairs = fit_pairwise_gmms(arr, n_components=range(1, 11))
-    # Costs/overhead are scaled to this data (V_0 ~ O(100)); with the example's
-    # tiny c/t the policy would just "always proceed" (threshold at the grid floor).
-    t_data = float(np.median(arr[:, 2]))
-    c_data = np.array([100.0, 100.0])
+    # Costs/overhead scaled to this data (V_0 centered ~90). These land both upstream
+    # thresholds at stable interior values; diagnose_saturation confirms none saturated.
+    t_data = float(np.percentile(arr[:, 2], 40))
+    c_data = np.array([35.0, 30.0])  # (c_1, c_0)
     v_star_data, tab_data = train_tarquin(data_pairs, c_data, t_data)
-    print(f"\nfit_pairwise_gmms on make_demo_data() (t={t_data:.1f}, c=100): "
+    print(f"\nfit_pairwise_gmms on make_demo_data() (t={t_data:.1f}, c={c_data.tolist()}): "
           f"v* = {np.round(v_star_data, 2).tolist()}  "
           "(-inf=always proceed, +inf=never)")
     print("  diagnose_saturation:", diagnose_saturation(v_star_data, tab_data, c_data)["summary"])
