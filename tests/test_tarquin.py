@@ -555,6 +555,67 @@ def test_bounds_support_lo_override():
                          support_lo=np.array([2.0, 0.0]))
 
 
+# --- P0 payoff diagnostics: calibration + circularity --------------------------
+
+
+def test_payoff_calibration_clean_vs_inflated():
+    rng = np.random.default_rng(0)
+    v0 = rng.normal(1.0, 1.0, 50_000)
+    y_cal = v0 + rng.normal(0, 0.5, v0.size)          # calibrated: E[Y | v0] = v0
+    out = tq.diagnose_payoff_calibration(v0, y_cal)
+    assert abs(out["bias"]) < 0.02
+    assert out["slope"] == pytest.approx(1.0, abs=0.05)
+    assert out["ece"] < 0.05
+    assert out["inflated"] is False
+    y_inf = v0 - 0.5 + rng.normal(0, 0.5, v0.size)    # realized below forecast: V_0 inflated
+    out2 = tq.diagnose_payoff_calibration(v0, y_inf)
+    assert out2["bias"] < -0.4                         # E[Y] - E[V_0] strongly negative
+    assert out2["inflated"] is True
+    assert "INFLATED" in out2["summary"]
+    assert out2["ece"] == pytest.approx(0.5, abs=0.05)
+
+
+def test_payoff_calibration_matured_mask_and_support():
+    rng = np.random.default_rng(1)
+    v0 = rng.normal(0, 1, 1000)
+    y = v0 + rng.normal(0, 0.3, 1000)
+    y[::2] = np.nan                                    # half un-matured
+    out = tq.diagnose_payoff_calibration(v0, y)        # matured = finite y
+    assert out["n_matured"] == 500
+    assert out["n_total"] == 1000
+    lo, hi = out["matured_support"]
+    assert lo < hi
+    mask = np.zeros(1000, dtype=bool)
+    mask[:100] = True                                  # explicit mask overrides
+    out2 = tq.diagnose_payoff_calibration(v0, v0, matured_mask=mask)
+    assert out2["n_matured"] == 100
+    with pytest.raises(ValueError, match=">= 2 matured"):
+        tq.diagnose_payoff_calibration(np.array([1.0]), np.array([1.0]),
+                                       matured_mask=np.array([False]))
+
+
+def test_payoff_circularity_flags_rank_duplicate():
+    rng = np.random.default_rng(2)
+    g = rng.normal(0, 1, 5000)                # a gating prophecy
+    indep = rng.normal(0, 1, 5000)            # an independent column
+    payoff_mono = np.exp(0.5 * g)             # monotone transform of the gate -> Spearman 1
+    data = np.column_stack([g, indep, payoff_mono])   # cols: 0=gate, 1=indep, 2=payoff
+    out = tq.diagnose_payoff_circularity(data, payoff_col=2, gate_cols=[0, 1])
+    assert out["rank_corr"][0] == pytest.approx(1.0, abs=1e-6)   # monotone dup of the gate
+    assert abs(out["rank_corr"][1]) < 0.1                        # independent
+    assert out["flagged"] == [0]
+    assert "circular" in out["summary"]
+
+
+def test_payoff_circularity_clean():
+    rng = np.random.default_rng(3)
+    data = rng.normal(0, 1, (3000, 3))        # all independent
+    out = tq.diagnose_payoff_circularity(data, payoff_col=2, gate_cols=[0, 1])
+    assert out["flagged"] == []
+    assert out["max_abs"] < 0.1
+    assert "Necessary-but-not-sufficient" in out["summary"]
+
+
 def test_evaluate_policy_mc_hand_computed():
     # Lock the cost accounting against a payoff computed by hand on 3 deterministic rows.
     # Book (col 0, col 1); v* = (1.0 for col 0, 0.0 = t for col 1); acquiring col 1 costs 2.

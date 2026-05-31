@@ -44,6 +44,8 @@ __all__ = [
     "diagnose_sufficiency",
     "diagnose_fosd",
     "diagnose_saturation",
+    "diagnose_payoff_calibration",
+    "diagnose_payoff_circularity",
     "simulate_incumbent_truncation",
     "holdout_split",
     "bootstrap_thresholds",
@@ -886,6 +888,143 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
         viols.append(worst)
     viol = np.array(viols)
     return {"violation": viol, "max": float(viol.max()) if viol.size else 0.0}
+
+
+def diagnose_payoff_calibration(
+    v0_pred, y_realized, *, matured_mask=None, n_bins: int = 10, inflation_rtol: float = 0.1
+) -> dict:
+    """Check that the payoff prophecy V_0 is calibrated against the realized outcome Y, i.e.
+    E[Y | V_0 = v_0] ~= v_0, on the matured subset.
+
+    In deployment V_0 is almost always a *forecast* of a realized outcome Y. The recursion
+    optimizes E[(V_0 - t)^+], which equals the realized expected payoff *only if* the forecast
+    is calibrated; a forecast inflated by selection makes upstream thresholds saturate to -inf
+    ("never cut"). This is the actionable core of the payoff gap, distinct from selection-aware
+    conditional fitting (which corrects the conditional *distribution* of V_0, not the
+    forecast-to-outcome map).
+
+    IN-DISTRIBUTION ONLY. A realized Y exists only for draws that proceeded (were funded) and
+    matured, i.e. the high-V_0 region. The cut acts at/below that region's lower edge, where no
+    Y exists and calibration is *unverifiable*. This check therefore validates V_0 only where
+    the policy already proceeds, never where it would newly cut; closing that gap needs an
+    uncensored experiment, not a reliability plot on the survivors.
+
+    Parameters
+    ----------
+    v0_pred : array of the payoff prophecy values (the forecast used as V_0).
+    y_realized : array of realized outcomes, aligned with `v0_pred`; un-matured entries may be
+        NaN (treated as not-matured unless `matured_mask` says otherwise).
+    matured_mask : optional bool array; if omitted, rows with finite `y_realized` are "matured".
+    n_bins : quantile bins of V_0 for the reliability table.
+
+    Returns dict with "bias" (E[Y]-E[V_0]; < 0 means V_0 inflated), "slope"/"intercept" of the
+    realized-on-predicted line (calibrated ~ slope 1, intercept 0), "ece" (bin-count-weighted
+    mean |realized-predicted|), "max_abs_gap", "matured_support", "bins", "inflated",
+    "n_matured"/"n_total", and a "summary".
+    """
+    v0 = np.asarray(v0_pred, dtype=float)
+    y = np.asarray(y_realized, dtype=float)
+    if v0.shape != y.shape:
+        raise ValueError(f"v0_pred and y_realized must align; got {v0.shape} vs {y.shape}")
+    matured = np.isfinite(y) if matured_mask is None else np.asarray(matured_mask, dtype=bool)
+    sel = matured & np.isfinite(v0) & np.isfinite(y)
+    n_mat = int(sel.sum())
+    if n_mat < 2:
+        raise ValueError("need >= 2 matured rows with finite V_0 and Y to assess calibration")
+    vp, yr = v0[sel], y[sel]
+    bias = float(yr.mean() - vp.mean())            # < 0 => V_0 inflated above realized
+    slope, intercept = (float(x) for x in np.polyfit(vp, yr, 1))
+
+    edges = np.quantile(vp, np.linspace(0.0, 1.0, n_bins + 1))
+    edges[-1] = np.inf
+    idx = np.clip(np.searchsorted(edges, vp, side="right") - 1, 0, n_bins - 1)
+    bins, ece = [], 0.0
+    for b in range(n_bins):
+        m = idx == b
+        nb = int(m.sum())
+        if not nb:
+            continue
+        pm, rm = float(vp[m].mean()), float(yr[m].mean())
+        bins.append({"bin": b, "n": nb, "pred_mean": pm, "realized_mean": rm, "gap": rm - pm})
+        ece += (nb / n_mat) * abs(rm - pm)
+    max_abs_gap = max((abs(bk["gap"]) for bk in bins), default=0.0)
+    support = (float(vp.min()), float(vp.max()))
+    # "Inflated" means V_0 *materially* over-predicts realized: a negative bias larger than
+    # `inflation_rtol` of the realized spread (not mere sampling noise, which a large n makes
+    # tiny but statistically nonzero). This is the configuration that drives -inf saturation.
+    inflated = bias < -inflation_rtol * float(np.std(yr))
+    summary = (
+        f"calibration on {n_mat} matured rows: bias E[Y]-E[V_0] = {bias:+.4g}, slope = "
+        f"{slope:.3g}, intercept = {intercept:+.3g}, ECE = {ece:.4g}. "
+        + ("V_0 looks INFLATED vs realized (predicted > realized); upstream thresholds may "
+           "saturate to -inf (never cut). " if inflated else "")
+        + f"Verified only on the matured V_0 support [{support[0]:.4g}, {support[1]:.4g}] "
+        "(in-distribution / proceeded region); calibration below it, where a cut would act, "
+        "is unverifiable without an uncensored experiment."
+    )
+    return {"n_matured": n_mat, "n_total": int(v0.size), "bias": bias, "slope": slope,
+            "intercept": intercept, "ece": float(ece), "max_abs_gap": max_abs_gap,
+            "matured_support": support, "bins": bins, "inflated": bool(inflated),
+            "summary": summary}
+
+
+def _avg_ranks(x: np.ndarray) -> np.ndarray:
+    """Average ranks (ties shared), the basis of Spearman correlation. No scipy dependency."""
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(x.shape[0], dtype=float)
+    ranks[order] = np.arange(1, x.shape[0] + 1)
+    uniq, inv, counts = np.unique(x, return_inverse=True, return_counts=True)
+    sums = np.zeros(uniq.shape[0])
+    np.add.at(sums, inv, ranks)
+    return (sums / counts)[inv]
+
+
+def diagnose_payoff_circularity(
+    data, payoff_col: int, gate_cols, *, near_duplicate: float = 0.98
+) -> dict:
+    """Flag a payoff that is a rank near-duplicate of a gating prophecy (Spearman correlation).
+
+    When V_0 is the same model output a threshold gates on, the objective max E[(V_0 - t)^+]
+    is tautological with the policy ("proceed wherever the forecast clears t") and the recursion
+    validates the forecast against itself. A high |Spearman| between the payoff column and a
+    gate column is positive evidence of that.
+
+    NECESSARY-BUT-NOT-SUFFICIENT: a low score does NOT clear circularity. It cannot detect that
+    V_0 was *trained* on the gated outcome (invisible from the columns); validate V_0 against a
+    realized outcome with `diagnose_payoff_calibration` for that.
+
+    Parameters
+    ----------
+    data : (n, D) array; columns are prophecies.
+    payoff_col : index of the payoff prophecy V_0.
+    gate_cols : indices of the gating prophecies to compare against.
+    near_duplicate : |Spearman| at/above which a gate is flagged as a near-duplicate.
+
+    Returns dict with "rank_corr" (per gate col), "max_abs", "flagged" (gate cols at/above the
+    cutoff), and a "summary".
+    """
+    data = np.asarray(data, dtype=float)
+    pay = data[:, payoff_col]
+    rank_corr = {}
+    for g in gate_cols:
+        col = data[:, g]
+        sel = np.isfinite(pay) & np.isfinite(col)
+        if int(sel.sum()) < 2:
+            rank_corr[int(g)] = float("nan")
+            continue
+        rank_corr[int(g)] = float(np.corrcoef(_avg_ranks(pay[sel]), _avg_ranks(col[sel]))[0, 1])
+    finite = {g: v for g, v in rank_corr.items() if np.isfinite(v)}
+    max_abs = max((abs(v) for v in finite.values()), default=0.0)
+    flagged = [g for g, v in finite.items() if abs(v) >= near_duplicate]
+    summary = (
+        (f"payoff column {payoff_col} is a rank near-duplicate (|Spearman| >= {near_duplicate}) "
+         f"of gate column(s) {flagged}: likely circular (the objective is tautological with the "
+         "gate). " if flagged else
+         f"no gate column reaches |Spearman| >= {near_duplicate} (max {max_abs:.3g}). ")
+        + "Necessary-but-not-sufficient: cannot detect a payoff trained on the gated outcome; "
+        "validate against realized Y with diagnose_payoff_calibration."
+    )
+    return {"rank_corr": rank_corr, "max_abs": max_abs, "flagged": flagged, "summary": summary}
 
 
 def diagnose_saturation(v_star, tab, c) -> dict:
