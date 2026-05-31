@@ -83,7 +83,7 @@ r^T_n=\text{arg max}_{r_n} E(\pi_n|V_n=v_n,r) \quad \forall n\in\{0,...,N\}
 \end{equation}
 $$
 
-The expectation conditions on $V_n=v_n$. The buyer has in fact observed the whole acquired prefix $V_N,...,V_n$ by this point, so restricting $r_n$ to a function of $v_n$ alone is a genuine restriction; it is *without loss of optimality* precisely because of sufficiency (Assumption 1): the Markov property gives $(V_{n-1},...,V_0)\perp(V_N,...,V_{n+1})\mid V_n$, so the discarded prefix carries no information about the downstream payoff and the optimal decision depends on the history only through $v_n$. (Conditioning instead on the full draw $V$ — including the not-yet-acquired $V_{n-1},...,V_0$ — would make $\pi_n$ deterministic and the decision clairvoyant; that is the separate thing being excluded here.) This is the role sufficiency plays in justifying the *decision rule*, distinct from its role in collapsing the recursion to adjacent pairs (Prop. 4). Since each $\pi_n$ depends on the downstream decisions $r_{n-1},...,r_0$, the Tarquinian condition above is a system whose nodewise optima are resolved together by the backward recursion below.
+The expectation conditions on $V_n=v_n$. The buyer has in fact observed the whole acquired prefix $V_N,...,V_n$ by this point, so restricting $r_n$ to a function of $v_n$ alone is a genuine restriction; it is *without loss of optimality* precisely because of sufficiency (Assumption 1): the Markov property gives $(V_{n-1},...,V_0)\perp(V_N,...,V_{n+1})\mid V_n$, so the discarded prefix carries no information about the downstream payoff and the optimal decision depends on the history only through $v_n$. (Conditioning instead on the full draw $V$, including the not-yet-acquired $V_{n-1},...,V_0$, would make $\pi_n$ deterministic and the decision clairvoyant; that is the separate thing being excluded here.) This is the role sufficiency plays in justifying the *decision rule*, distinct from its role in collapsing the recursion to adjacent pairs (Prop. 4). Since each $\pi_n$ depends on the downstream decisions $r_{n-1},...,r_0$, the Tarquinian condition above is a system whose nodewise optima are resolved together by the backward recursion below.
 
 **Nodewise optima are globally optimal.** The Tarquinian condition is defined nodewise (eq. 2), but the resulting policy also maximizes the global objective $E(\pi_N)$, with no circularity in the recursion. By Prop. 4, $p_n^T(v_n)$ depends only on the downstream decisions $r_{n-1},...,r_0$, never on $r_n$ itself or on any upstream choice. So the recursion fixes $r_0^T$ first, which determines $p_1^T$ and hence $r_1^T$, and so on, and no later choice perturbs an earlier value function. Because each $r_n$ enters the realized payoff $\pi_N$ only through the single factor $r_n(v_n)$ it multiplies, choosing each $r_n$ to maximize $p_n^T(v_n)$ jointly maximizes $E(\pi_N)$. This is exactly the principle-of-optimality / backward-induction argument for the optimal-stopping problem named in the Snell-envelope remark below.
 
@@ -398,22 +398,26 @@ The implementation reproduces the Gaussian example above to four decimal places 
 All public functions take and return columns in README order (V_N, ..., V_0).
 
 *Core.*
-- `train_tarquin(pairs, c, t)` -> `(v_star, tab)` — Algorithm 1: thresholds `v_star = (v_N*, ..., v_0*)` by grid value-function iteration. `tab` holds the grids and tabulated value functions.
-- `infer_tarquin(v_star, v)` -> `r` — Algorithm 2: the {0,1} purchase decisions for one draw.
+- `train_tarquin(pairs, c, t)` -> `(v_star, tab)`. Algorithm 1: thresholds `v_star = (v_N*, ..., v_0*)` by grid value-function iteration. `tab` holds the grids and tabulated value functions.
+- `infer_tarquin(v_star, v)` -> `r`. Algorithm 2: the {0,1} purchase decisions for one draw.
 
 *Modeling the conditionals.*
-- `fit_pairwise_gmms(data, n_components=5)` — fit one 2-D GMM per adjacent pair (the recommended input to `train_tarquin`). Any `covariance_type` (`full`/`tied`/`diag`/`spherical`) is accepted; a non-`full` fit is densified to the layout the recursion needs.
-- `fit_joint_gmm(data, n_components=10)` + `pairs_from_joint(gmm, col_order)` — fit a single joint, then extract a book's adjacent pairs; use when ranking abridgements/rearrangements that need conditionals for arbitrary pairs.
-- `marginalize_gmm(gmm, dims)` — low-level GMM marginalization.
+- `fit_pairwise_gmms(data, n_components=5)`: fit one 2-D GMM per adjacent pair (the recommended input to `train_tarquin`). Any `covariance_type` (`full`/`tied`/`diag`/`spherical`) is accepted; a non-`full` fit is densified to the layout the recursion needs. Selection-aware: `np.nan` entries (a prophecy not acquired) are handled per pair, see [Deployed and truncated samples](#deployed-and-truncated-samples).
+- `fit_joint_gmm(data, n_components=10)` + `pairs_from_joint(gmm, col_order)`: fit a single joint, then extract a book's adjacent pairs; use when ranking abridgements/rearrangements that need conditionals for arbitrary pairs.
+- `marginalize_gmm(gmm, dims)`: low-level GMM marginalization.
 
 *Books (subsets / reorderings).*
-- `train_book(gmm_full, col_order, cost_per_prophecy, t)` — train on a subset and/or permutation of columns.
-- `enumerate_abridgements(col_order)` — yield the $2^{|\delta|-1}-2$ abridgements that keep $V_0$.
-- `evaluate_policy_mc(samples, col_order, v_star, cost_per_prophecy, t)` — per-sample payoffs under the learned policy. Score on a holdout (`holdout_split`), not the fitting sample, to avoid optimistic bias.
+- `train_book(gmm_full, col_order, cost_per_prophecy, t)`: train on a subset and/or permutation of columns.
+- `enumerate_abridgements(col_order)`: yield the $2^{|\delta|-1}-2$ abridgements that keep $V_0$.
+- `evaluate_policy_mc(samples, col_order, v_star, cost_per_prophecy, t)`: per-sample payoffs under the learned policy. Score on a holdout (`holdout_split`), not the fitting sample, to avoid optimistic bias.
 
 *Assumption diagnostics.* Both are *necessary* (not sufficient) data-level checks; combine them with the training-time monotonicity warning, which acts on the fitted conditionals.
 - `diagnose_sufficiency(data)`: partial correlation of each non-adjacent outer pair given the middle prophecy; ~0 is consistent with the Markov assumption (Assumption 1). Linear, so it can miss nonlinear violations.
 - `diagnose_fosd(data)`: largest upward conditional-CDF step across $V_n$ bins; ~0 is consistent with stochastic monotonicity / FOSD (Assumption 2).
+
+*Deployed / truncated samples.* See [Deployed and truncated samples](#deployed-and-truncated-samples).
+- `simulate_incumbent_truncation(data, thresholds)`: turn a clean full-joint sample into the ragged, one-sided-truncated sample an incumbent threshold policy would collect (`np.nan` where a draw stopped). The validation harness for selection-aware fitting.
+- `diagnose_saturation(v_star, tab, c)`: explain a saturated $\pm\infty$ threshold; flags a cost-trivial regime (cost not binding, only the terminal $v_0^\ast=t$ matters) versus a finite, tuned cut.
 
 *Uncertainty.*
 - `bootstrap_thresholds(data, c, t, n_boot=200, n_components=5)`: resample rows, refit the pairwise conditionals, and retrain on each replicate to get a bootstrap distribution of `v*`. Returns the point estimate, per-threshold mean/std, a percentile CI, and `n_finite` (how many replicates resolved each threshold, the rest having saturated to a $\pm\infty$ endorsement set). The CI is taken over the finite replicates; a low `n_finite` flags a threshold that is genuinely unstable on this sample rather than a number to trust.
@@ -497,6 +501,18 @@ E(\pi_{n-1}|V_n=v_n) = \int_{\mathbb{R}} r_{n-1}(v_{n-1})p_{n-1}(v_{n-1})f_{n-1|
 $$
 
 However, in general the VOI is simply the difference between the values of the purchased state and the next best alternative. For fixed $V$, the sole alternative is to exit, but if the buyer is allowed to skip $V_{n-1}$, there could be a better alternative, lowering the value of this prophecy. We will discuss this in more detail in a future section.
+
+## Deployed and truncated samples
+
+The game assumes the vendor hands the buyer an i.i.d. draw from the full joint. A sample collected from a system *already running* a threshold policy is not that: a prophecy $V_{n-1}$ is revealed only for draws that proceeded past step $n$ ($V_n$ above the incumbent threshold), so the realized sample is **one-sided-truncated by the very thresholds being optimized**. Fitting each conditional on the fully-revealed (complete-case) rows truncates the *response* $V_{n-1}$ from below and biases $f_{n-1|n}$ exactly in the low-$V_n$ region where $v_n^\ast$ lives; the observed symptom is upstream thresholds collapsing to $-\infty$.
+
+Three tools address the *identified* part of this problem:
+
+- **`fit_pairwise_gmms` is selection-aware.** Pass a ragged array with `np.nan` where a prophecy was not acquired, and each pair $(V_n, V_{n-1})$ is fit on the rows that reveal *both* (proceeded past step $n$), not the fully-revealed intersection. By sufficiency, given $V_n=v_n$ the outcome $V_{n-1}$ is independent of the upstream survival, so this is unbiased wherever $V_n$ was revealed. (`fit_joint_gmm` cannot do this: a joint fit needs every dimension at once, so it drops incomplete rows and warns; prefer the pairwise fit on ragged data.)
+- **`simulate_incumbent_truncation(data, thresholds)`** applies an incumbent threshold policy to a clean full-joint sample, producing the ragged sample a deployed system would collect. It is the validation harness: ragged fitting on its output recovers the clean thresholds, complete-case fitting does not.
+- **`diagnose_saturation(v_star, tab, c)`** explains a saturated $\pm\infty$ threshold; in particular whether the cost is simply not binding against the payoff spread (a cost-trivial regime where only the terminal $v_0^\ast=t$ matters), as opposed to a tuned recommendation.
+
+**Identifiability is asymmetric.** $v_n^\ast$ is recoverable when the incumbent was too *loose* ($v_n^\ast$ above its threshold, in the revealed region) but unidentified when it was too *tight* ($v_n^\ast$ below it, where the sample has zero overlap). The below-threshold region is reachable only by extrapolation under the FOSD prior; a monotone-bounded extrapolation and a partial-identification (interval) mode are future work. On a truncated sample, treat a saturated threshold as a bound, not a point. (See `TARQUIN_EXTENSIONS.md` for the fuller roadmap.)
 
 ## Future work
 
