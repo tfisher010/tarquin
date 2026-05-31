@@ -558,6 +558,8 @@ The first level is a call on $V_0$ struck at the overhead, exactly the Bachelier
 
 **The contribution here is the estimation regime, not the decision rule.** A deployed sample is not an i.i.d. draw from the joint: a system already running a threshold policy reveals $V_{n-1}$ only on draws that proceeded past step $n$ and so the data is one-sided-truncated and missing-not-at-random, censored by the very thresholds being optimized (see [Deployed and truncated samples](#deployed-and-truncated-samples)). The PAC-learning results above assume exactly the clean samples this regime breaks. Against that, the package contributes: (i) selection-aware fitting, consistent on the target conditional wherever $V_n$ is revealed, by sufficiency; (ii) FOSD-pinned partial identification of the region truncation cannot recover, returned as an interval rather than a point via `identification="bounds"`; and (iii) the identifiability asymmetry, that a too-loose incumbent point-identifies the threshold while a too-tight one only bounds it. Offline policy learning under censoring is adjacent ([censored treatment rules 2024](https://arxiv.org/abs/2408.09155); [offline inventory under censored demand 2025](https://arxiv.org/abs/2504.09831)), but censors the outcome, not the selection the decision threshold itself induces in a refinement chain. To our knowledge that combination, incumbent-policy truncation with FOSD partial-identification bounds and the point-versus-bounds asymmetry in the Markov refinement chain, is not covered by these literatures.
 
+Full BibTeX for the works cited above is in [`references.bib`](references.bib).
+
 ## Future work
 
 - Extend the discrete sequence of prophecies to a continuous game.
