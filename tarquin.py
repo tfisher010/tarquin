@@ -350,7 +350,10 @@ def train_tarquin(
     # p_0^T(v_0) = v_0 - t (monotone by construction; the call is a no-op here).
     p0 = _enforce_monotone(grids[0] - t, 0, monotone, _mono_tol(grids[0] - t))
     p = [p0]
-    v_star_asc = [_threshold_from_grid(grids[0], p0)]  # = t
+    # v_0^* = t exactly (Prop. 1), set directly rather than read off the grid: the root
+    # of v_0 - t is t, but `_threshold_from_grid` would saturate to +/-inf if t fell
+    # outside the modeled V_0 support, silently breaking the documented invariant.
+    v_star_asc = [float(t)]
 
     for n in range(1, N + 1):
         pair = pairs[n - 1]
@@ -446,9 +449,14 @@ def _fit_one_gmm(X, n_components, random_state, covariance_type, **kwargs):
             **kwargs,
         ).fit(X)
         bic = g.bic(X)
-        # Keep the first fit as a fallback so a degenerate all-NaN BIC sweep (e.g. a
-        # collapsed component) still returns a usable model rather than None.
-        if best_gmm is None or bic < best_bic:
+        # Prefer the lowest finite BIC. The first fit is kept as a fallback so a
+        # degenerate all-NaN BIC sweep (e.g. a collapsed component) still returns a
+        # usable model rather than None; but as soon as any finite BIC appears it
+        # replaces a non-finite incumbent -- otherwise a NaN in the *first* slot would
+        # latch `best_bic = nan` and block every later (finite, better) candidate.
+        if best_gmm is None:
+            best_gmm, best_bic = g, bic
+        elif np.isfinite(bic) and (not np.isfinite(best_bic) or bic < best_bic):
             best_gmm, best_bic = g, bic
     return best_gmm
 
@@ -637,9 +645,13 @@ def diagnose_sufficiency(data) -> dict:
     two outer prophecies given the middle one. Under the chain V_N -> ... -> V_0 we have
     V_{n+1} ⊥ V_{n-1} | V_n, so each partial correlation should be ~0.
 
-    This is a *linear, necessary* check: values near 0 are consistent with sufficiency
-    but do not prove it (nonlinear residual dependence is invisible to a correlation);
-    a large value is positive evidence *against* sufficiency. Pair it with
+    This is a *linear, necessary* check, weak in two distinct ways: (1) it is a
+    correlation, so nonlinear residual dependence is invisible to it; (2) it only tests
+    *span-2* triples (each outer pair is one step beyond the conditioning variable),
+    whereas the full chain also requires V_{n+1} ⊥ {V_{n-1}, ..., V_0} | V_n -- a
+    distribution can pass every consecutive-triple check yet have V_{n+1} depend on
+    V_{n-2} given V_n. Values near 0 are therefore consistent with sufficiency but do
+    not prove it; a large value is positive evidence *against* it. Pair this with
     `diagnose_fosd` and the training-time monotonicity warning for a fuller picture.
 
     Rule of thumb: |partial_corr| < ~0.1 is reassuring; > ~0.2 is a concrete signal to
@@ -658,8 +670,8 @@ def diagnose_sufficiency(data) -> dict:
         r_yz = np.corrcoef(y, z)[0, 1]
         denom = np.sqrt(max((1 - r_xz**2) * (1 - r_yz**2), np.finfo(float).tiny))
         pcs.append((r_xy - r_xz * r_yz) / denom)
-    pcs = np.array(pcs)
-    return {"partial_corr": pcs, "max_abs": float(np.abs(pcs).max()) if pcs.size else 0.0}
+    pc = np.array(pcs)
+    return {"partial_corr": pc, "max_abs": float(np.abs(pc).max()) if pc.size else 0.0}
 
 
 def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
@@ -700,8 +712,8 @@ def diagnose_fosd(data, *, n_bins: int = 10, n_thresholds: int = 25) -> dict:
         steps = np.diff(cdfs, axis=0)  # >0 means CDF rose with V_n: an FOSD violation
         worst = float(np.nanmax(np.maximum(steps, 0.0))) if np.isfinite(steps).any() else 0.0
         viols.append(worst)
-    viols = np.array(viols)
-    return {"violation": viols, "max": float(viols.max()) if viols.size else 0.0}
+    viol = np.array(viols)
+    return {"violation": viol, "max": float(viol.max()) if viol.size else 0.0}
 
 
 def holdout_split(data, test_frac: float = 0.3, seed: int = 0):
@@ -748,6 +760,12 @@ def bootstrap_thresholds(
 
     Cost note: each replicate is a full fit+train, so wall time is ~`n_boot` ×
     `train_tarquin`; keep `n_components` scalar (not a BIC sweep) for speed.
+
+    Scope note: every replicate refits with the same GMM `random_state` (the
+    `fit_pairwise_gmms` default), so the reported spread captures *resampling* (and
+    hence data) uncertainty but not EM-initialization variance. Pass a
+    `fit_kwargs={"random_state": ...}` per call, or raise `n_init`, if you want the fit's
+    own optimization noise reflected too.
 
     Returns dict with:
       "point"    : (N+1,) v* on the full sample.
