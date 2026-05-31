@@ -311,3 +311,70 @@ def test_bootstrap_thresholds_shapes_and_ci():
             assert out["mean"][i] <= out["ci_high"][i] + 1e-9
     with pytest.raises(ValueError, match="ci must be"):
         tq.bootstrap_thresholds(arr, c, t, n_boot=2, ci=1.5)
+
+
+# --- fixes from the third review ---------------------------------------------
+
+
+def test_v0_star_is_t_even_when_t_outside_grid():
+    # Prop. 1 says v_0^* = t for any t. Reading the threshold off the V_0 grid would
+    # saturate to +/-inf when t lies outside the modeled support; set it directly.
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    for t in (1.0, 20.0, -20.0):  # 20 / -20 sit well outside the V_0 +-10*sigma grid
+        v_star, _ = tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=t, monotone="off")
+        assert v_star[2] == pytest.approx(t, abs=1e-12)
+        assert np.isfinite(v_star[2])
+
+
+def _ar1_chain_gmm(rho, d, var=1.0):
+    """Single-component joint GMM for a Gaussian AR(1) chain on d variables.
+
+    AR(1) covariance Sigma_{ij} = var * rho^|i-j| has tridiagonal precision, so the
+    sequence in index order is exactly a Markov chain (sufficiency holds) and each
+    Gaussian conditional is FOSD-increasing (stochastic monotonicity holds).
+    """
+    idx = np.arange(d)
+    cov = var * rho ** np.abs(idx[:, None] - idx[None, :])
+    g = GaussianMixture(n_components=1, covariance_type="full")
+    g.weights_ = np.array([1.0])
+    g.means_ = np.zeros((1, d))
+    g.covariances_ = cov[None, :, :]
+    g.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(g.covariances_))
+    return g
+
+
+def test_n3_chain_trains_and_is_well_posed():
+    # End-to-end on N=3 (a 4-prophecy book): exercises the linear-in-N recursion and
+    # the grid-union logic past the N=2 cases the rest of the suite uses.
+    g = _ar1_chain_gmm(rho=0.6, d=4)
+    pairs = tq.pairs_from_joint(g, (0, 1, 2, 3))
+    assert len(pairs) == 3
+    c = np.array([0.02, 0.02, 0.02])  # (c_2, c_1, c_0) in README order
+    t = 0.0
+    # An exact Gaussian chain is FOSD-true, so no monotonicity projection is needed.
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("error")
+        v_star, tab = tq.train_tarquin(pairs, c, t)
+    assert v_star.shape == (4,)
+    assert v_star[3] == pytest.approx(t, abs=1e-12)        # v_0^* = t
+    assert np.all(np.isfinite(v_star))                      # all thresholds resolve
+    for p in tab["p"]:
+        assert np.all(np.diff(p) >= -1e-9)                  # nondecreasing (Prop. 3)
+    # Inference walks top-down and short-circuits on the first sub-threshold signal.
+    assert list(tq.infer_tarquin(v_star, [5, 5, 5, 5])) == [1, 1, 1, 1]
+    assert list(tq.infer_tarquin(v_star, [5, -5, 5, 5])) == [1, 0, 0, 0]
+
+
+def test_evaluate_policy_mc_hand_computed():
+    # Lock the cost accounting against a payoff computed by hand on 3 deterministic rows.
+    # Book (col 0, col 1); v* = (1.0 for col 0, 0.0 = t for col 1); acquiring col 1 costs 2.
+    samples = np.array([[10.0, 5.0], [10.0, -5.0], [0.0, 5.0]])
+    cost_per_prophecy = np.array([np.nan, 2.0])  # col 0 free (top), col 1 costs 2
+    v_star = np.array([1.0, 0.0])
+    pi = tq.evaluate_policy_mc(samples, (0, 1), v_star, cost_per_prophecy, t=0.0)
+    # Row 0: pass v0>1, pay 2 for col1, pass v1>0, collect 5  -> -2 + 5 = 3
+    # Row 1: pass v0>1, pay 2 for col1, fail v1>0             -> -2
+    # Row 2: fail v0>1 (exit before any cost)                 ->  0
+    assert pi == pytest.approx([3.0, -2.0, 0.0], abs=1e-12)
