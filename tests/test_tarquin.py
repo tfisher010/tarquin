@@ -233,10 +233,33 @@ def test_diagnose_fosd_flags_violation():
 
 
 def test_diagnose_sufficiency_on_markov_demo():
-    # make_demo_data is a genuine Markov chain, so partial correlations are ~0.
+    # make_demo_data is a genuine Markov chain, so both partial-correlation measures are ~0.
     out = tq.diagnose_sufficiency(tq.make_demo_data())
-    assert out["partial_corr"].shape == (1,)  # one interior column for N=2
+    assert out["partial_corr"].shape == (1,)           # one interior column for N=2
+    assert out["partial_corr_spearman"].shape == (1,)
     assert out["max_abs"] < 0.1
+    # max_abs spans both measures.
+    both = np.concatenate([np.abs(out["partial_corr"]), np.abs(out["partial_corr_spearman"])])
+    assert out["max_abs"] == pytest.approx(np.nanmax(both))
+
+
+def test_diagnose_sufficiency_rank_measure_invariant_and_catches_monotone():
+    # The rank (Spearman) partial correlation is invariant to a monotone marginal transform,
+    # whereas the Pearson one is not. On a chain whose middle column is observed through a
+    # strong monotone-nonlinear lens, partialling z out *linearly* leaves residual structure
+    # the Pearson measure can mistake for a dependence; the rank measure sees through it.
+    rng = np.random.default_rng(0)
+    z = rng.normal(0, 1, 40_000)                       # latent middle
+    x = z + 0.3 * rng.normal(0, 1, 40_000)             # outer, given z
+    y = z + 0.3 * rng.normal(0, 1, 40_000)             # outer, given z (so x ⊥ y | z: Markov)
+    base = np.column_stack([x, z, y])
+    warped = np.column_stack([x, np.exp(3.0 * z), y])  # same chain, middle seen monotone-warped
+    # The chain is Markov in both: the rank measure is ~unchanged by the warp (invariance),
+    # and stays small (correctly reads "consistent with sufficiency").
+    r_base = tq.diagnose_sufficiency(base)["partial_corr_spearman"][0]
+    r_warp = tq.diagnose_sufficiency(warped)["partial_corr_spearman"][0]
+    assert abs(r_warp - r_base) < 0.02                 # rank measure is transform-invariant
+    assert abs(r_warp) < 0.1                            # and correctly small (Markov holds)
 
 
 def test_diagnostics_are_nan_safe_on_ragged_data():
@@ -567,6 +590,30 @@ def test_bounds_bracket_unidentified_threshold():
 
 
 @pytest.mark.slow
+def test_bounds_pessimistic_pinned_at_edge_with_zero_cost():
+    # With a (near-)zero step cost at a truncated level, the pessimistic floor below a_n is ~0,
+    # so reading the grid sign change naively saturates v_hi to -inf and collapses the interval
+    # to [-inf, -inf]. The pessimistic (highest) bound must instead pin at the support edge a_n:
+    # below it the sample identifies nothing, so a cut cannot be ruled out up to a_n. (Mirrors the
+    # point-mode clamp guard, which already handles this zero-cost edge.)
+    import warnings as _w
+
+    data = _gaussian_example_samples(200_000, seed=0)
+    t = 1.0
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        pairs = tq.fit_pairwise_gmms(tq.simulate_incumbent_truncation(data, [0.5, 0.0]),
+                                     n_components=1)
+        a2 = pairs[1].tarquin_support_lo_                 # identified edge of V_2 (~0.5)
+        # Zero cost at the truncated V_2 level; the V_0 cost is the loose, identified one.
+        v_lo, v_hi, _ = tq.train_tarquin(pairs, np.array([0.0, 0.1]), t=t,
+                                         identification="bounds")
+    assert v_lo[0] == -np.inf                             # optimistic: threshold can go to -inf
+    assert np.isfinite(v_hi[0])                           # pessimistic: NOT -inf despite zero cost
+    assert v_hi[0] == pytest.approx(a2, abs=0.05)         # pinned at the support edge
+
+
+@pytest.mark.slow
 def test_extrapolation_clamp_and_flag():
     import warnings as _w
 
@@ -870,12 +917,24 @@ def test_diagnose_sufficiency_untestable_is_nan():
     # not a falsely reassuring 0.0 (which would read as "perfectly Markov").
     out = tq.diagnose_sufficiency(tq.make_demo_data()[:, :2])
     assert out["partial_corr"].shape == (0,)
+    assert out["partial_corr_spearman"].shape == (0,)
     assert np.isnan(out["max_abs"])
 
 
 def test_diagnose_fosd_untestable_is_nan():
     # A single column has no adjacent pair to evaluate; max must be NaN, not 0.0.
     out = tq.diagnose_fosd(tq.make_demo_data()[:, :1])
+    assert np.isnan(out["max"])
+
+
+def test_diagnose_fosd_untestable_within_pair_is_nan():
+    # A conditioning column with no spread (heavy ties) collapses all mass into one bin, so
+    # there is no adjacent-bin CDF step to evaluate. That pair must read NaN (untestable), not
+    # a falsely reassuring 0.0 -- consistent with the too-few-rows NaN path.
+    rng = np.random.default_rng(0)
+    data = np.column_stack([np.zeros(500), rng.normal(0, 1, 500)])  # V_n constant -> one bin
+    out = tq.diagnose_fosd(data)
+    assert np.isnan(out["violation"][0])
     assert np.isnan(out["max"])
 
 
