@@ -118,9 +118,17 @@ def test_nonmonotone_detected_and_handled():
     # "raise" errors out.
     with pytest.raises(ValueError, match="not nondecreasing"):
         tq.train_tarquin(pairs, c, t, monotone="raise")
-    # "project" warns and yields monotone value functions.
-    with pytest.warns(UserWarning, match="Projecting"):
+    # "project" (default) corrects SILENTLY -- no monotonicity warning -- and yields
+    # monotone value functions. (Saturation warnings may still fire; only the
+    # monotonicity warning must be absent.)
+    import warnings as _w
+
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter("always")
         _, tab = tq.train_tarquin(pairs, c, t, monotone="project")
+    assert not any(
+        "nondecreasing" in str(x.message) or "Projecting" in str(x.message) for x in rec
+    )
     for p in tab["p"]:
         assert np.all(np.diff(p) >= -1e-9)
 
@@ -170,6 +178,7 @@ def test_marginalize_gmm_is_usable():
     assert np.all(np.isfinite(m.score_samples(X)))
 
 
+@pytest.mark.slow
 def test_thresholds_beat_perturbations_mc():
     # The learned thresholds should maximize E[pi] under the MC policy: perturbing
     # either nontrivial threshold up or down should not increase the payoff.
@@ -188,6 +197,7 @@ def test_thresholds_beat_perturbations_mc():
             assert alt <= base + 5e-4  # within MC noise
 
 
+@pytest.mark.slow
 def test_abridgement_dominance_regression():
     # README claim: the full book (0,1,2) is dominated by both 2-prophecy abridgements.
     g = gaussian_example()
@@ -293,6 +303,7 @@ def test_degenerate_grid_raises():
         tq.train_tarquin([g], np.array([0.1]), t=0.0)
 
 
+@pytest.mark.slow
 def test_bootstrap_thresholds_shapes_and_ci():
     arr = tq.make_demo_data()
     c, t = np.array([100.0, 100.0]), float(np.median(arr[:, 2]))
@@ -412,6 +423,7 @@ def test_fit_pairwise_all_missing_pair_raises():
         tq.fit_pairwise_gmms(trunc, n_components=1)
 
 
+@pytest.mark.slow
 def test_ragged_fit_beats_complete_case_under_truncation():
     # The validation harness: truncate a clean draw with a *loose* incumbent (tau below the
     # true thresholds, so v* stays identified), then check ragged fitting recovers the clean
@@ -486,6 +498,7 @@ def test_bounds_equal_point_when_fully_identified():
     assert "p_lo" in tab and "p_hi" in tab
 
 
+@pytest.mark.slow
 def test_bounds_collapse_when_incumbent_loose():
     import warnings as _w
 
@@ -502,6 +515,7 @@ def test_bounds_collapse_when_incumbent_loose():
     assert v_lo[0] == pytest.approx(v_clean[0], abs=0.05)
 
 
+@pytest.mark.slow
 def test_bounds_bracket_unidentified_threshold():
     import warnings as _w
 
@@ -522,6 +536,7 @@ def test_bounds_bracket_unidentified_threshold():
     assert v_lo[2] == pytest.approx(t, abs=1e-9)        # v_0^* = t exactly, both bounds
 
 
+@pytest.mark.slow
 def test_extrapolation_clamp_and_flag():
     import warnings as _w
 
@@ -583,6 +598,7 @@ def test_grid_bounds_override_sets_grid_span():
         tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0, grid_bounds=[(-4.0, 4.0)])
 
 
+@pytest.mark.slow
 def test_grid_bounds_rescues_heavy_truncation_grid():
     # A heavy incumbent cut shrinks the survivor fit's sigma so the default +-10sigma grid can
     # miss the true low support; supplying the uncensored support via observed_support fixes it.
@@ -712,6 +728,43 @@ def test_payoff_circularity_clean():
     assert out["flagged"] == []
     assert out["max_abs"] < 0.1
     assert "Necessary-but-not-sufficient" in out["summary"]
+
+
+def test_inflated_payoff_drives_upstream_saturation_to_neg_inf():
+    # End-to-end on the README/diagnostics claim: an inflated payoff forecast V_0 (one with
+    # E[Y | V_0] < V_0) makes proceeding worthwhile even at the lowest modeled signal, so every
+    # upstream threshold saturates to -inf ("never cut") and only the terminal v_0^* = t binds;
+    # a calibrated forecast leaves the upstream thresholds finite. diagnose_payoff_calibration
+    # separates the two cases on (forecast, realized) data.
+    def chain_gmm(v0_mean):
+        mu = np.array([0.0, 0.0, v0_mean])
+        cov = np.array([[1.0, 0.6, 0.36], [0.6, 1.0, 0.6], [0.36, 0.6, 1.0]])
+        g = GaussianMixture(n_components=1, covariance_type="full")
+        g.weights_ = np.array([1.0])
+        g.means_ = mu[None, :]
+        g.covariances_ = cov[None, :, :]
+        g.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(cov))
+        return g
+
+    c, t = np.array([0.05, 0.05]), 0.5
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")  # the inflated case raises -inf saturation warnings
+        v_cal, _ = tq.train_tarquin(
+            tq.pairs_from_joint(chain_gmm(0.0), (0, 1, 2)), c, t, monotone="off")
+        v_inf, _ = tq.train_tarquin(
+            tq.pairs_from_joint(chain_gmm(8.0), (0, 1, 2)), c, t, monotone="off")
+    assert np.all(np.isfinite(v_cal[:2]))                   # calibrated: real cuts on V_2, V_1
+    assert v_inf[0] == -np.inf and v_inf[1] == -np.inf      # inflated: never cut upstream
+    assert v_inf[2] == pytest.approx(t, abs=1e-9)           # only the terminal rule binds
+
+    rng = np.random.default_rng(0)
+    y = rng.normal(0.5, 1.0, 40_000)                        # realized outcome
+    v0_cal = y + rng.normal(0, 0.3, y.size)                 # calibrated: E[Y | V_0] ~ V_0
+    v0_inf = y + 8.0 + rng.normal(0, 0.3, y.size)           # inflated forecast (+8)
+    assert tq.diagnose_payoff_calibration(v0_cal, y)["inflated"] is False
+    assert tq.diagnose_payoff_calibration(v0_inf, y)["inflated"] is True
 
 
 def test_evaluate_policy_mc_hand_computed():
