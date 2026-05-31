@@ -555,6 +555,104 @@ def test_bounds_support_lo_override():
                          support_lo=np.array([2.0, 0.0]))
 
 
+# --- P0 grid_bounds override + observed_support; P2 sample_weight --------------
+
+
+def test_observed_support_ignores_nan():
+    data = np.array([[1.0, 5.0, 9.0],
+                     [2.0, np.nan, 8.0],
+                     [3.0, 7.0, np.nan]])
+    sup = tq.observed_support(data)
+    assert sup[0] == (1.0, 3.0)
+    assert sup[1] == (5.0, 7.0)        # NaN ignored
+    assert sup[2] == (8.0, 9.0)
+    allnan = np.full((4, 2), np.nan)
+    assert tq.observed_support(allnan) == [None, None]
+
+
+def test_grid_bounds_override_sets_grid_span():
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    # Override the V_2 level (README index 0) grid; leave others to the GMM-derived span.
+    bounds = [(-4.0, 4.0), None, None]
+    v_star, tab = tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0, grid_bounds=bounds)
+    g2 = tab["grids"][2]               # level 2 = V_2
+    assert g2[0] == pytest.approx(-4.0) and g2[-1] == pytest.approx(4.0)
+    # other levels unaffected (not equal to the override range)
+    assert not (tab["grids"][1][0] == pytest.approx(-4.0))
+    with pytest.raises(ValueError, match="grid_bounds of length 3"):
+        tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0, grid_bounds=[(-4.0, 4.0)])
+
+
+def test_grid_bounds_rescues_heavy_truncation_grid():
+    # A heavy incumbent cut shrinks the survivor fit's sigma so the default +-10sigma grid can
+    # miss the true low support; supplying the uncensored support via observed_support fixes it.
+    import warnings as _w
+
+    data = _gaussian_example_samples(200_000, seed=0)
+    sup = tq.observed_support(data)    # true (uncensored) per-column support
+    tight = tq.simulate_incumbent_truncation(data, [1.5, 0.0])  # heavy cut on V_2
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        pairs = tq.fit_pairwise_gmms(tight, n_components=1)
+        _, tab = tq.train_tarquin(pairs, np.array([0.05, 0.1]), t=1.0, grid_bounds=sup,
+                                  monotone="off")
+    g2 = tab["grids"][2]
+    assert g2[0] == pytest.approx(sup[0][0]) and g2[-1] == pytest.approx(sup[0][1])
+
+
+def test_sample_weight_resamples_and_validates():
+    import warnings as _w
+
+    arr = tq.make_demo_data()
+    n = arr.shape[0]
+    w = np.ones(n)
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        pairs = tq.fit_pairwise_gmms(arr, n_components=2, sample_weight=w)
+    assert len(pairs) == 2
+    # shape / sign validation
+    with pytest.raises(ValueError, match="sample_weight must have shape"):
+        tq.fit_pairwise_gmms(arr, n_components=2, sample_weight=np.ones(n - 1))
+    bad = np.ones(n)
+    bad[0] = -1.0
+    with pytest.raises(ValueError, match="nonnegative"):
+        tq.fit_pairwise_gmms(arr, n_components=2, sample_weight=bad)
+
+
+def test_sample_weight_shifts_the_fit():
+    # Weighting toward high-V_2 rows should raise the fitted mean of V_2 in its pair.
+    rng = np.random.default_rng(0)
+    data = rng.normal(0.0, 1.0, (40_000, 3))       # iid columns: V_2, V_1, V_0
+    flat = tq.fit_pairwise_gmms(data, n_components=1)
+    w = (data[:, 0] > 0).astype(float) + 1e-6      # upweight high-V_2 (data col 0 = V_2)
+    up = tq.fit_pairwise_gmms(data, n_components=1, sample_weight=w)
+    # pairs[1] = (V_2, V_1); pair col 0 = V_2 = data col 0. Its fitted mean should rise.
+    assert up[1].means_[0, 0] > flat[1].means_[0, 0] + 0.2
+
+
+def test_regime_overlap_reports_floor_gain():
+    rng = np.random.default_rng(0)
+    full = rng.normal(0, 1, (40_000, 3))                  # iid columns V_2, V_1, V_0
+    half = full.shape[0] // 2
+    a = tq.simulate_incumbent_truncation(full[:half], [1.0, -3.0])   # regime A: tau_2 = 1.0
+    b = tq.simulate_incumbent_truncation(full[half:], [-1.0, -3.0])  # regime B: tau_2 = -1.0
+    data = np.vstack([a, b])
+    regime = np.array(["A"] * half + ["B"] * (full.shape[0] - half))
+    out = tq.diagnose_regime_overlap(data, regime)
+    # conditioning col 0 = V_2: the pair (V_2,V_1) floor is the incumbent tau_2 per regime.
+    pr = out[0]["per_regime"]
+    assert pr["A"][0] == pytest.approx(1.0, abs=0.1)
+    assert pr["B"][0] == pytest.approx(-1.0, abs=0.1)
+    assert out[0]["floor_gain"] == pytest.approx(2.0, abs=0.2)   # pooling reaches ~2 lower
+    assert out[0]["prophecy"] == "V_2"
+    # V_1's pair has the same loose tau_1 in both regimes -> negligible gain.
+    assert out[1]["floor_gain"] < 0.3
+    assert out["max_floor_gain"] == pytest.approx(out[0]["floor_gain"], abs=1e-9)
+    assert 2 not in out                                          # payoff V_0 is not a conditioner
+    with pytest.raises(ValueError, match="regime length"):
+        tq.diagnose_regime_overlap(data, np.array(["A"]))
+
+
 # --- P0 payoff diagnostics: calibration + circularity --------------------------
 
 
