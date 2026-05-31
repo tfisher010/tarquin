@@ -239,6 +239,36 @@ def test_diagnose_sufficiency_on_markov_demo():
     assert out["max_abs"] < 0.1
 
 
+def test_diagnostics_are_nan_safe_on_ragged_data():
+    # Ragged (truncated) deployment samples carry NaN where a draw stopped. The data-level
+    # diagnostics must drop those rows per pair/triple, not silently return a falsely
+    # reassuring "no violation" (diagnose_fosd's old NaN-quantile path returned 0.0) or
+    # propagate a NaN out of np.corrcoef without saying so.
+    data = _gaussian_example_samples(20_000, seed=2)
+    trunc = tq.simulate_incumbent_truncation(data, [0.0, 0.0])  # ~16% / 39% NaN in V_1 / V_0
+    assert np.isnan(trunc).any()
+
+    # FOSD on the clean Gaussian chain is satisfied; the complete-case-per-pair fit on the
+    # ragged copy must agree (small violation), NOT report a misleading 0.0.
+    clean_fosd = tq.diagnose_fosd(data)["max"]
+    ragged_fosd = tq.diagnose_fosd(trunc)
+    assert np.isfinite(ragged_fosd["max"])
+    assert ragged_fosd["max"] > 0.0                       # genuinely evaluated, not zeroed out
+    assert ragged_fosd["max"] == pytest.approx(clean_fosd, abs=0.1)
+
+    # Sufficiency: the natural-order chain is Markov, so the partial correlation stays ~0
+    # on the complete-case rows -- and crucially is finite, not the old NaN from corrcoef.
+    ragged_suff = tq.diagnose_sufficiency(trunc)
+    assert np.all(np.isfinite(ragged_suff["partial_corr"]))
+    assert ragged_suff["max_abs"] < 0.1
+
+    # An unidentified pair (too few revealed rows to bin) yields NaN, not 0.0.
+    allnan = data.copy()
+    allnan[:, 1] = np.nan                                 # V_1 never revealed
+    fosd_unident = tq.diagnose_fosd(allnan)
+    assert np.isnan(fosd_unident["violation"]).any()
+
+
 def test_bic_selects_components_and_trains():
     arr = tq.make_demo_data()
     pairs = tq.fit_pairwise_gmms(arr, n_components=range(1, 5), n_init=1)
