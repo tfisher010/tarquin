@@ -38,3 +38,7 @@ jobs:
         run: pytest -q
         env:
           LOKY_MAX_CPU_COUNT: "2"  # silence joblib physical-core probe on CI runners
+      - name: Smoke-test the worked example
+        run: python tarquin.py  # exercises the full public API end-to-end (README example)
+        env:
+          LOKY_MAX_CPU_COUNT: "2"
