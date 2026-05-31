@@ -767,6 +767,61 @@ def test_inflated_payoff_drives_upstream_saturation_to_neg_inf():
     assert tq.diagnose_payoff_calibration(v0_inf, y)["inflated"] is True
 
 
+def test_rearrangement_can_break_markov_sufficiency():
+    # Abridgements preserve the Markov chain (dropping interior nodes of a chain leaves a
+    # chain), but a genuine rearrangement need not: train_book on a reordering is only
+    # approximate. Lock the premise of that caveat -- the worked example is Markov in the
+    # natural order (V_2->V_1->V_0) yet not under the (V_1, V_2, V_0) permutation, which
+    # puts the weakly-linked pair adjacent.
+    g = gaussian_example()
+    rng = np.random.default_rng(0)
+    S = rng.multivariate_normal(g.means_[0], g.covariances_[0], size=200_000)
+    assert tq.diagnose_sufficiency(S)["max_abs"] < 0.05            # natural order: Markov
+    assert tq.diagnose_sufficiency(S[:, [1, 0, 2]])["max_abs"] > 0.1  # reordered: not Markov
+    # train_book still *runs* on the reordering (it is a valid policy to score); the caveat is
+    # only about exactness of its thresholds, which the MC ranking does not depend on. With the
+    # reorder (1, 0, 2) the new free top is original column 1, so columns 0 and 2 need finite
+    # costs (col 1's slot is the unused free one).
+    cost = np.array([0.05, np.nan, 0.1])
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")  # a non-Markov order may trip monotonicity projection
+        v_reordered, _ = tq.train_book(g, (1, 0, 2), cost, t=1.0)
+    assert v_reordered.shape == (3,)
+    assert v_reordered[-1] == pytest.approx(1.0, abs=1e-9)         # v_0^* = t regardless
+
+
+def test_nan_cost_raises_clear_error():
+    # A NaN in the cost vector (e.g. a misaligned cost_per_prophecy) must raise a clear error,
+    # not propagate into the value functions and crash opaquely in the isotonic projection.
+    pairs = tq.pairs_from_joint(gaussian_example(), (0, 1, 2))
+    with pytest.raises(ValueError, match="cost vector must be finite"):
+        tq.train_tarquin(pairs, np.array([np.nan, 0.1]), t=1.0)
+
+
+def test_underresolved_grid_warns():
+    # A near-deterministic conditional (corr ~1) has a tiny conditional std; the grid is sized
+    # to the marginal spread, so it under-resolves that component and train_tarquin must warn.
+    # This is distinct from the edge under-coverage that mass renormalization already handles.
+    g = GaussianMixture(n_components=1, covariance_type="full")
+    g.weights_ = np.array([1.0])
+    g.means_ = np.array([[0.0, 0.0]])                              # pair (V_1, V_0)
+    cov = np.array([[[1.0, 0.99999], [0.99999, 1.0]]])            # corr ~1 -> tiny cond. std
+    g.covariances_ = cov
+    g.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(cov))
+    with pytest.warns(UserWarning, match="under-resolves"):
+        tq.train_tarquin([g], np.array([0.1]), t=0.0, monotone="off")
+    # A well-resolved Gaussian must NOT trip it (guards against a spurious warning).
+    import warnings as _w
+
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter("always")
+        tq.train_tarquin(tq.pairs_from_joint(gaussian_example(), (0, 1, 2)),
+                         np.array([0.05, 0.1]), t=1.0)
+    assert not any("under-resolves" in str(x.message) for x in rec)
+
+
 def test_evaluate_policy_mc_hand_computed():
     # Lock the cost accounting against a payoff computed by hand on 3 deterministic rows.
     # Book (col 0, col 1); v* = (1.0 for col 0, 0.0 = t for col 1); acquiring col 1 costs 2.
