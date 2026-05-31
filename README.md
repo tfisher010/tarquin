@@ -398,11 +398,11 @@ The implementation reproduces the Gaussian example above to four decimal places 
 All public functions take and return columns in README order (V_N, ..., V_0).
 
 *Core.*
-- `train_tarquin(pairs, c, t)` -> `(v_star, tab)`. Algorithm 1: thresholds `v_star = (v_N*, ..., v_0*)` by grid value-function iteration. `tab` holds the grids and tabulated value functions. With `identification="bounds"` returns `(v_lo, v_hi, tab)` interval thresholds for a truncated sample; see [Deployed and truncated samples](#deployed-and-truncated-samples).
+- `train_tarquin(pairs, c, t)` -> `(v_star, tab)`. Algorithm 1: thresholds `v_star = (v_N*, ..., v_0*)` by grid value-function iteration. `tab` holds the grids and tabulated value functions. With `identification="bounds"` returns `(v_lo, v_hi, tab)` interval thresholds for a truncated sample; see [Deployed and truncated samples](#deployed-and-truncated-samples). `grid_bounds` (README order, per level) overrides the GMM-derived grid span, e.g. from `observed_support` on uncensored data so a survivor fit's narrowed $\sigma$ does not clip the grid.
 - `infer_tarquin(v_star, v)` -> `r`. Algorithm 2: the {0,1} purchase decisions for one draw.
 
 *Modeling the conditionals.*
-- `fit_pairwise_gmms(data, n_components=5)`: fit one 2-D GMM per adjacent pair (the recommended input to `train_tarquin`). Any `covariance_type` (`full`/`tied`/`diag`/`spherical`) is accepted; a non-`full` fit is densified to the layout the recursion needs. Selection-aware: `np.nan` entries (a prophecy not acquired) are handled per pair, see [Deployed and truncated samples](#deployed-and-truncated-samples).
+- `fit_pairwise_gmms(data, n_components=5)`: fit one 2-D GMM per adjacent pair (the recommended input to `train_tarquin`). Any `covariance_type` (`full`/`tied`/`diag`/`spherical`) is accepted; a non-`full` fit is densified to the layout the recursion needs. Selection-aware: `np.nan` entries (a prophecy not acquired) are handled per pair, see [Deployed and truncated samples](#deployed-and-truncated-samples). Accepts `sample_weight` for inverse-selection reweighting (applied by weight-proportional resampling, since sklearn's GMM has no native weighting; degenerate under deterministic stops).
 - `fit_joint_gmm(data, n_components=10)` + `pairs_from_joint(gmm, col_order)`: fit a single joint, then extract a book's adjacent pairs; use when ranking abridgements/rearrangements that need conditionals for arbitrary pairs.
 - `marginalize_gmm(gmm, dims)`: low-level GMM marginalization.
 
@@ -412,7 +412,7 @@ All public functions take and return columns in README order (V_N, ..., V_0).
 - `evaluate_policy_mc(samples, col_order, v_star, cost_per_prophecy, t)`: per-sample payoffs under the learned policy. Score on a holdout (`holdout_split`), not the fitting sample, to avoid optimistic bias.
 
 *Assumption diagnostics.* Both are *necessary* (not sufficient) data-level checks; combine them with the training-time monotonicity warning, which acts on the fitted conditionals.
-- `diagnose_sufficiency(data)`: partial correlation of each non-adjacent outer pair given the middle prophecy; ~0 is consistent with the Markov assumption (Assumption 1). Linear, so it can miss nonlinear violations.
+- `diagnose_sufficiency(data)`: partial correlation of each non-adjacent outer pair given the middle prophecy; ~0 is consistent with the Markov assumption (Assumption 1). Linear, so it can miss nonlinear violations. If it flags a violation, the fix is to construct a better 1-D sufficient summary upstream ($V_n' = g(V_n, X)$) and re-run on the re-summarized columns, not to condition the recursion on extra covariates; see [Sufficiency failures](#sufficiency-failures-and-covariate-conditioning).
 - `diagnose_fosd(data)`: largest upward conditional-CDF step across $V_n$ bins; ~0 is consistent with stochastic monotonicity / FOSD (Assumption 2).
 
 *Deployed / truncated samples.* See [Deployed and truncated samples](#deployed-and-truncated-samples).
@@ -420,6 +420,8 @@ All public functions take and return columns in README order (V_N, ..., V_0).
 - `diagnose_saturation(v_star, tab, c)`: explain a saturated $\pm\infty$ threshold; flags a cost-trivial regime (cost not binding, only the terminal $v_0^\ast=t$ matters) versus a finite, tuned cut.
 - `diagnose_payoff_calibration(v0_pred, y_realized, matured_mask=...)`: reliability of the payoff prophecy $V_0$ against the realized outcome $Y$ on the matured subset (bias, slope, ECE). In-distribution only: it validates $V_0$ where the policy already proceeds, never where a cut would newly act.
 - `diagnose_payoff_circularity(data, payoff_col, gate_cols)`: flag a payoff that is a rank near-duplicate (high Spearman) of a gating prophecy. Necessary-but-not-sufficient; it cannot detect a payoff trained on the gated outcome.
+- `observed_support(data)`: per-column observed `[min, max]` (README order, NaN-ignoring), for use as `train_tarquin`'s `grid_bounds`. Compute on *uncensored* data to set the true grid range, notably for $V_N$ (seen on every draw), when a survivor fit's $\pm$`halfwidth`$\cdot\sigma$ would miss the true support.
+- `diagnose_regime_overlap(data, regime)`: per-incumbent-regime identification floor of each pair (the smallest $V_n$ for which the pair was observed). Reports `floor_gain`, how much lower the pooled floor reaches than the most restrictive single regime; a large value means pooling across regimes materially widens the identified region (a lever, not just a non-stationarity hazard).
 
 *Uncertainty.*
 - `bootstrap_thresholds(data, c, t, n_boot=200, n_components=5)`: resample rows, refit the pairwise conditionals, and retrain on each replicate to get a bootstrap distribution of `v*`. Returns the point estimate, per-threshold mean/std, a percentile CI, and `n_finite` (how many replicates resolved each threshold, the rest having saturated to a $\pm\infty$ endorsement set). The CI is taken over the finite replicates; a low `n_finite` flags a threshold that is genuinely unstable on this sample rather than a number to trust.
@@ -518,6 +520,12 @@ Four tools address it:
 **Identifiability is asymmetric.** $v_n^\ast$ is recoverable when the incumbent was too *loose* ($v_n^\ast$ above its threshold, in the revealed region; the bounds collapse to a point) but unidentified when it was too *tight* ($v_n^\ast$ below it, where the sample has zero overlap; the bounds open up to $[-\infty, a_n]$). On a truncated sample, treat a saturated threshold as a bound, not a point, and prefer `identification="bounds"`. (See `TARQUIN_EXTENSIONS.md` for the fuller roadmap.)
 
 **Calibrate the payoff first.** A separate failure mode: in deployment $V_0$ is usually a *forecast* of a realized outcome $Y$, and the recursion optimizes $E[(V_0-t)^+]$, which equals realized value only if the forecast is calibrated ($E[Y\mid V_0]=V_0$). A forecast inflated by selection drives every upstream threshold to $-\infty$ ("never cut"), and no amount of selection-aware fitting corrects it, since calibration is the signal-to-outcome map, outside the prophecy chain. `diagnose_payoff_calibration` checks $V_0$ against realized $Y$ on the matured subset, and `diagnose_payoff_circularity` flags a $V_0$ that is a rank near-duplicate of a gate (the tautological case). Both come with the same caveat as the truncation gap: a realized $Y$ exists only where the policy *proceeded*, so calibration is verifiable only in-distribution, never in the region a cut would newly act. None of it replaces an uncensored experiment; it makes the pre-experiment read honest.
+
+## Sufficiency failures and covariate conditioning
+
+If `diagnose_sufficiency` flags that a scalar $V_n$ is not a complete summary, the resolution is **upstream re-summarization**, not richer conditioning inside the recursion. Fold whatever extra information $X$ carries into a 1-D statistic $V_n' = g(V_n, X)$ (e.g. a posterior summary of $V_{n-1}$ given $V_N,...,V_n$) and re-run tarquin on the re-summarized columns; this restores the Markov chain and keeps the scalar FOSD structure, the single-threshold output, and the interval-endorsement guarantee intact. The package already supports it: it is just a different set of columns.
+
+Conditioning the recursion on covariates instead ($f(V_{n-1}\mid V_n, X)$) is deliberately *not* supported. Marginalizing $X$ back out recovers the same $V_n$-only conditional and does not repair the Markov collapse the recursion (Prop. 4) relies on; letting the decision act on $X$ turns each threshold into a *surface* over $(V_n, X)$, discarding the $v^\ast$ vector, the interval corollary, and the scalar FOSD argument. That is a different method (multivariate optimal stopping with decision regions), out of scope here. See `covariate-conditioning-note.md` for the full reasoning.
 
 ## Future work
 
