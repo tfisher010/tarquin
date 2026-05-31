@@ -312,6 +312,48 @@ def _threshold_from_grid(grid: np.ndarray, p: np.ndarray) -> float:
     return float(x0 - y0 * (x1 - x0) / (y1 - y0))
 
 
+def _level_integral(pair: GaussianMixture, g_n: np.ndarray, g_prev: np.ndarray,
+                    p_prev: np.ndarray) -> np.ndarray:
+    """E[(p_prev)^+ | V_n = v] for every v in g_n: the conditional expectation of the
+    positive part of the previous level's value function (the Snell-envelope integrand).
+
+    Trapezoidal rule against each Gaussian conditional component on g_prev (endpoints
+    half-weighted), renormalized by the conditional mass actually captured on the grid so a
+    component whose conditional mean is pushed toward a grid edge is not under-integrated.
+    Returns the integral (before subtracting cost). Shared by the point and bounds paths.
+    """
+    weights, means, sigmas = _conditional_params(pair, g_n)  # (G,K),(G,K),(K,)
+    tw = _trapz_weights(g_prev.size)
+    p_prev_pos = np.maximum(p_prev, 0.0) * tw
+    dx = g_prev[1] - g_prev[0]
+    integral = np.empty_like(means)  # (G, K)
+    for k in range(pair.n_components):
+        w_mat = _gauss_pdf(g_prev[None, :], means[:, k][:, None], sigmas[k])
+        num = (w_mat @ p_prev_pos) * dx  # int (p_prev)^+ f_k over the grid
+        mass = (w_mat @ tw) * dx         # int f_k over the grid (<= 1); renormalizes num
+        integral[:, k] = np.divide(num, mass, out=np.zeros_like(num), where=mass > 0)
+    return (weights * integral).sum(axis=1)
+
+
+def _resolve_support_lo(pairs: list[GaussianMixture], N: int, support_lo, use_support: bool):
+    """Per-level lower edge a_n of the identified region of V_n (the conditioning variable of
+    pairs[n-1]), for n=1..N. Below a_n the conditional f_(n-1|n) was never observed (the
+    sample stopped), so the recursion would be extrapolating. Sources, in order: an explicit
+    `support_lo` array (README order, length N+1; the V_n slot is index N-n), else the
+    `tarquin_support_lo_` attribute `fit_pairwise_gmms` records on a ragged fit, else -inf
+    (fully identified). When `use_support` is False (the default point/"gmm" path) every a_n
+    is -inf, so behavior is unchanged.
+    """
+    if not use_support:
+        return [-np.inf] * N
+    if support_lo is not None:
+        support_lo = np.asarray(support_lo, dtype=float)
+        if support_lo.shape != (N + 1,):
+            raise ValueError(f"expected support_lo of length {N + 1}, got {support_lo.shape}")
+        return [float(support_lo[N - n]) for n in range(1, N + 1)]
+    return [float(getattr(pairs[n - 1], "tarquin_support_lo_", -np.inf)) for n in range(1, N + 1)]
+
+
 def train_tarquin(
     pairs: list[GaussianMixture],
     c: np.ndarray,
@@ -320,7 +362,10 @@ def train_tarquin(
     halfwidth: float = 10.0,
     grid_size: int = 3000,
     monotone: Literal["project", "check", "raise", "off"] = "project",
-) -> tuple[np.ndarray, dict]:
+    identification: Literal["point", "bounds"] = "point",
+    extrapolation: Literal["gmm", "clamp", "flag"] = "gmm",
+    support_lo: np.ndarray | None = None,
+):
     """Algorithm 1 (training) by backward value-function iteration on a grid.
 
     Parameters
@@ -351,14 +396,33 @@ def train_tarquin(
         when it acts; "check" warns only; "raise" errors; "off" disables the check.
         All four agree on the exact single-component Gaussian case (already monotone,
         so projection is a no-op there).
+    identification : "point" (default) returns a single threshold vector; "bounds" returns
+        a (v_lo, v_hi) interval per threshold under the FOSD prior, honest about a region
+        the sample does not identify (see `extrapolation` / `support_lo`).
+    extrapolation : how to treat V_n below its identified support a_n (where the conditional
+        f_(n-1|n) was never observed, e.g. a sample truncated by an incumbent threshold).
+        "gmm" (default) lets the fitted GMM extrapolate freely (the original behavior; uses
+        no support information). "clamp" applies the FOSD-pessimistic envelope below a_n
+        (continuation value floored to 0, so p_n^T = -c there): a threshold that would fall
+        below the identified support is reported conservatively at a_n rather than at an
+        extrapolated value. "flag" extrapolates like "gmm" but warns when the resolved
+        threshold lies below a_n, i.e. depends on extrapolated mass. The honest treatment of
+        a genuinely unidentified threshold is `identification="bounds"`, which brackets it.
+    support_lo : optional per-level lower edge of the identified region, README order
+        (length N+1; the V_n slot is index N-n, the V_0 slot is ignored). If omitted, taken
+        from the `tarquin_support_lo_` attribute a ragged `fit_pairwise_gmms` records, else
+        -inf (fully identified). Only consulted when identification="bounds" or
+        extrapolation in {"clamp", "flag"}.
 
     Returns
     -------
-    v_star : np.ndarray, shape (N+1,)
-        Thresholds in README order (v_N^*, ..., v_0^*). v_0^* = t.
-    tab : dict with keys "grids" (list of N+1 grids, level 0..N over V_0..V_N) and
-        "p" (list of tabulated p_n^T values on those grids). Useful for plotting
-        or reusing the value functions; index 0 is level 0 (V_0).
+    If identification="point": (v_star, tab).
+      v_star : (N+1,) thresholds in README order (v_N^*, ..., v_0^*); v_0^* = t.
+      tab : dict with "grids" (N+1 grids, level 0..N over V_0..V_N) and "p" (tabulated
+        p_n^T per level; index 0 is level 0 / V_0).
+    If identification="bounds": (v_lo, v_hi, tab).
+      v_lo, v_hi : (N+1,) lower/upper bound per threshold (README order); v_lo == v_hi at a
+        point-identified level. tab carries "p_lo"/"p_hi" envelopes and the "support_lo" used.
     """
     N = len(pairs)
     c = np.asarray(c, dtype=float)
@@ -368,6 +432,11 @@ def train_tarquin(
         raise ValueError(f"cost vector must be nonnegative (README: c in R^N_>=0); got {c}")
 
     grids = _build_grids(pairs, halfwidth, grid_size)
+    use_support = identification == "bounds" or extrapolation in ("clamp", "flag")
+    a = _resolve_support_lo(pairs, N, support_lo, use_support)  # a[n-1] = a_n for level n
+
+    if identification == "bounds":
+        return _train_bounds(pairs, c, t, grids, a, monotone)
 
     # p_0^T(v_0) = v_0 - t (monotone by construction; the call is a no-op here).
     p0 = _enforce_monotone(grids[0] - t, 0, monotone, _mono_tol(grids[0] - t))
@@ -380,41 +449,73 @@ def train_tarquin(
     for n in range(1, N + 1):
         pair = pairs[n - 1]
         g_n, g_prev = grids[n], grids[n - 1]
-        weights, means, sigmas = _conditional_params(pair, g_n)  # (G,K),(G,K),(K,)
-
-        # Integrate (p_{n-1}^T)^+ against each conditional component by the trapezoidal
-        # rule against the Gaussian measure on the previous level's grid (endpoints
-        # half-weighted). Robust to the kink of the positive part, vectorized over the
-        # current grid.
-        tw = _trapz_weights(g_prev.size)
-        p_prev_pos = np.maximum(p[n - 1], 0.0) * tw
-        dx = g_prev[1] - g_prev[0]
-        integral = np.empty_like(means)  # (G, K)
-        for k in range(pair.n_components):
-            w_mat = _gauss_pdf(g_prev[None, :], means[:, k][:, None], sigmas[k])
-            num = (w_mat @ p_prev_pos) * dx  # int (p_{n-1}^T)^+ f_k over the grid
-            # Renormalize by the conditional mass actually captured on the grid, so a
-            # component whose conditional mean has been pushed toward a grid edge (large
-            # |v_n|) is not silently under-integrated. That truncation is the main source
-            # of finite-sample non-monotonicity in p_n^T. With the default +-10*sigma grid
-            # the captured mass is ~1 through the bulk, so this is a no-op there and on the
-            # exact single-component Gaussian example (mass = 1 to ~23 digits).
-            # Caveat: renormalization rescales the *captured* mean, it does not recover the
-            # lost tail. Since (p_{n-1}^T)^+ is increasing, mass lost past the right edge
-            # is the high-value tail, so an extreme-v_n estimate is biased slightly low;
-            # widen `halfwidth` if thresholds sit near an edge (a warning fires when they do).
-            mass = (w_mat @ tw) * dx  # int f_k over the grid (<= 1)
-            integral[:, k] = np.divide(num, mass, out=np.zeros_like(num), where=mass > 0)
-
         c_prev = float(c[N - n])  # README-indexed c_{n-1}
-        p_n = (weights * integral).sum(axis=1) - c_prev
-        p_n = _enforce_monotone(p_n, n, monotone, _mono_tol(p_n))
+        p_n = _level_integral(pair, g_n, g_prev, p[n - 1]) - c_prev
+        a_n = a[n - 1]
+
+        below = np.isfinite(a_n) and (g_n < a_n).any()
+        if extrapolation == "clamp" and below:
+            # FOSD-pessimistic envelope below the identified support: continuation value 0,
+            # so p_n^T = -c there. Project only the identified region, then floor below a_n.
+            mask = g_n >= a_n
+            p_n[mask] = _enforce_monotone(p_n[mask], n, monotone, _mono_tol(p_n[mask]))
+            p_n[~mask] = -c_prev
+        else:
+            p_n = _enforce_monotone(p_n, n, monotone, _mono_tol(p_n))
+
         p.append(p_n)
         v_n = _threshold_from_grid(g_n, p_n)
+        if extrapolation == "flag" and np.isfinite(a_n) and v_n < a_n:
+            warnings.warn(
+                f"v_{n}^* = {v_n:.4g} lies below the identified support edge a_{n} = "
+                f"{a_n:.4g}; its value depends on conditional mass the sample never observed "
+                "(extrapolation). Use identification='bounds' to bracket it, or 'clamp' for a "
+                "conservative read.",
+                stacklevel=2,
+            )
         _warn_if_near_edge(v_n, g_n, n)
         v_star_asc.append(v_n)
 
     return np.array(v_star_asc[::-1]), {"grids": grids, "p": p}
+
+
+def _train_bounds(pairs, c, t, grids, a, monotone):
+    """Partial-identification bounds: propagate an optimistic (p_hi) and a pessimistic (p_lo)
+    value-function envelope up the recursion. Below each level's identified support a_n the
+    FOSD prior pins p_n^T into [-c_{n-1}, p_n^T(a_n)]: the optimistic envelope clamps to the
+    edge value p_n^T(a_n) (no better than the edge), the pessimistic floors to -c_{n-1}
+    (continuation value 0). Returns (v_lo, v_hi, tab); v_lo (from the optimistic envelope,
+    the most-proceeding) is the lowest the threshold can be, v_hi (pessimistic) the highest.
+    """
+    N = len(pairs)
+    base = grids[0] - t          # V_0 is identified; v_0^* = t exactly
+    p_lo, p_hi = [base], [base]
+    v_lo_asc, v_hi_asc = [float(t)], [float(t)]
+
+    for n in range(1, N + 1):
+        pair = pairs[n - 1]
+        g_n, g_prev = grids[n], grids[n - 1]
+        c_prev = float(c[N - n])
+        a_n = a[n - 1]
+        ph = _level_integral(pair, g_n, g_prev, p_hi[n - 1]) - c_prev  # optimistic continuation
+        pl = _level_integral(pair, g_n, g_prev, p_lo[n - 1]) - c_prev  # pessimistic continuation
+
+        below = (g_n < a_n) if np.isfinite(a_n) else np.zeros(g_n.size, dtype=bool)
+        ident = ~below
+        if ident.any():
+            ph[ident] = _enforce_monotone(ph[ident], n, monotone, _mono_tol(ph[ident]))
+            pl[ident] = _enforce_monotone(pl[ident], n, monotone, _mono_tol(pl[ident]))
+        if below.any():
+            i = int(np.argmax(ident)) if ident.any() else g_n.size - 1  # first grid pt >= a_n
+            ph[below] = ph[i]        # optimistic: no better than the support edge
+            pl[below] = -c_prev      # pessimistic: continuation value 0
+        p_hi.append(ph)
+        p_lo.append(pl)
+        v_lo_asc.append(_threshold_from_grid(g_n, ph))  # optimistic (largest p) -> lowest v*
+        v_hi_asc.append(_threshold_from_grid(g_n, pl))  # pessimistic -> highest v*
+
+    tab = {"grids": grids, "p_lo": p_lo, "p_hi": p_hi, "support_lo": a}
+    return np.array(v_lo_asc[::-1]), np.array(v_hi_asc[::-1]), tab
 
 
 def infer_tarquin(v_star: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -539,8 +640,14 @@ def fit_pairwise_gmms(
                 "`diagnose_saturation`.",
                 stacklevel=2,
             )
-        gmm = _fit_one_gmm(sub[obs], n_components, random_state, covariance_type, **kwargs)
-        pairs.append(_as_full_covariance(gmm))
+        gmm = _as_full_covariance(
+            _fit_one_gmm(sub[obs], n_components, random_state, covariance_type, **kwargs)
+        )
+        # Record the identified lower edge of V_n (the conditioning column): the smallest v_n
+        # for which this pair was observed. Below it f_(n-1|n) is unidentified, which
+        # `train_tarquin`'s bounds / clamp / flag paths read via `tarquin_support_lo_`.
+        gmm.tarquin_support_lo_ = float(sub[obs, 0].min())
+        pairs.append(gmm)
     return pairs
 
 
@@ -1088,3 +1195,13 @@ if __name__ == "__main__":
         v_cc, _ = train_tarquin(fit_pairwise_gmms(cc, n_components=1), c, t)
     print(f"  ragged-fit    v* = {np.round(v_ragged, 3).tolist()}  (selection-aware)")
     print(f"  complete-case v* = {np.round(v_cc, 3).tolist()}  (response-truncation bias)")
+
+    # A *tight* incumbent (tau_2 above the true v_2*) leaves v_2* unidentified; bounds mode
+    # reports the honest interval [-inf, ~a_2] instead of a spurious point (P1).
+    tight = simulate_incumbent_truncation(full, thresholds=np.array([0.5, 0.0]))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        v_lo, v_hi, _ = train_tarquin(fit_pairwise_gmms(tight, n_components=1), c, t,
+                                      identification="bounds")
+    print(f"  tight incumbent, bounds: v_lo = {np.round(v_lo, 3).tolist()}, "
+          f"v_hi = {np.round(v_hi, 3).tolist()}  (v_2* unidentified below its floor)")
