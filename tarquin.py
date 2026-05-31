@@ -47,6 +47,8 @@ __all__ = [
     "diagnose_payoff_calibration",
     "diagnose_payoff_circularity",
     "simulate_incumbent_truncation",
+    "observed_support",
+    "diagnose_regime_overlap",
     "holdout_split",
     "bootstrap_thresholds",
     "make_demo_data",
@@ -186,7 +188,8 @@ def _col_span(gmm: GaussianMixture, col: int, halfwidth: float) -> tuple[float, 
     return float((mu - halfwidth * sigma).min()), float((mu + halfwidth * sigma).max())
 
 
-def _build_grids(pairs: list[GaussianMixture], halfwidth: float, size: int) -> list[np.ndarray]:
+def _build_grids(pairs: list[GaussianMixture], halfwidth: float, size: int,
+                 grid_bounds=None) -> list[np.ndarray]:
     """One grid per level 0..N over V_0..V_N.
 
     Each V_n appears in up to two adjacent pairs -- as the conditioning column
@@ -196,17 +199,26 @@ def _build_grids(pairs: list[GaussianMixture], halfwidth: float, size: int) -> l
     integrated at step n+1 is not silently truncated by a grid built from the other
     fit. For pairs extracted from a single joint (`pairs_from_joint`) the two views
     agree and the union is a no-op.
+
+    `grid_bounds`, if given, is a length-(N+1) sequence in README order (V_N..V_0); a
+    non-None entry `(lo, hi)` overrides the GMM-derived span for that level. Use it to set
+    the grid from the *true* support (e.g. V_N's uncensored marginal, which is free since
+    V_N is seen on every draw) when a survivor fit's mean +- halfwidth*std would miss it.
     """
     N = len(pairs)
     grids = []
     for m in range(N + 1):
-        spans = []
-        if m <= N - 1:
-            spans.append(_col_span(pairs[m], 1, halfwidth))      # V_m as conditioned col
-        if m >= 1:
-            spans.append(_col_span(pairs[m - 1], 0, halfwidth))  # V_m as conditioning col
-        lo = min(s[0] for s in spans)
-        hi = max(s[1] for s in spans)
+        override = None if grid_bounds is None else grid_bounds[N - m]  # README order -> level m
+        if override is not None:
+            lo, hi = float(override[0]), float(override[1])
+        else:
+            spans = []
+            if m <= N - 1:
+                spans.append(_col_span(pairs[m], 1, halfwidth))      # V_m as conditioned col
+            if m >= 1:
+                spans.append(_col_span(pairs[m - 1], 0, halfwidth))  # V_m as conditioning col
+            lo = min(s[0] for s in spans)
+            hi = max(s[1] for s in spans)
         if not hi > lo:
             raise ValueError(
                 f"degenerate grid at level {m}: span [{lo:.4g}, {hi:.4g}] has zero width "
@@ -367,6 +379,7 @@ def train_tarquin(
     identification: Literal["point", "bounds"] = "point",
     extrapolation: Literal["gmm", "clamp", "flag"] = "gmm",
     support_lo: np.ndarray | None = None,
+    grid_bounds=None,
 ):
     """Algorithm 1 (training) by backward value-function iteration on a grid.
 
@@ -379,7 +392,10 @@ def train_tarquin(
         Build these with `fit_pairwise_gmms` (from data) or `pairs_from_joint`.
     c : array of length N
         Cost vector in README order (c_{N-1}, ..., c_0); c_{n-1} is the cost of
-        acquiring V_{n-1} at step n. Must be nonnegative.
+        acquiring V_{n-1} at step n. Must be nonnegative. Semantics: c_{n-1} is the cost
+        *per draw that proceeds* from step n (it multiplies r_n in the payoff), so if you
+        reduce a per-draw cost distribution to a scalar, average over the draws that proceed
+        past step n, not over all draws or only the survivors that reach V_0.
     t : float
         Tightness / overhead parameter.
     halfwidth, grid_size : grid covers each marginal's mean +- halfwidth*std with
@@ -415,6 +431,11 @@ def train_tarquin(
         from the `tarquin_support_lo_` attribute a ragged `fit_pairwise_gmms` records, else
         -inf (fully identified). Only consulted when identification="bounds" or
         extrapolation in {"clamp", "flag"}.
+    grid_bounds : optional length-(N+1) sequence in README order (V_N..V_0); a non-None entry
+        (lo, hi) overrides the GMM-derived grid span for that level. Use `observed_support`
+        on uncensored data to set the true range, notably for V_N (seen on every draw), when a
+        survivor fit's mean +- halfwidth*std would miss the true support. The recursion is
+        conditional-only, so it never needs a marginal *distribution*, only the grid range.
 
     Returns
     -------
@@ -433,7 +454,9 @@ def train_tarquin(
     if np.any(c < 0):
         raise ValueError(f"cost vector must be nonnegative (README: c in R^N_>=0); got {c}")
 
-    grids = _build_grids(pairs, halfwidth, grid_size)
+    if grid_bounds is not None and len(grid_bounds) != N + 1:
+        raise ValueError(f"expected grid_bounds of length {N + 1}, got {len(grid_bounds)}")
+    grids = _build_grids(pairs, halfwidth, grid_size, grid_bounds)
     use_support = identification == "bounds" or extrapolation in ("clamp", "flag")
     a = _resolve_support_lo(pairs, N, support_lo, use_support)  # a[n-1] = a_n for level n
 
@@ -591,6 +614,7 @@ def fit_pairwise_gmms(
     n_components: NComponents = 5,
     random_state: int = 0,
     covariance_type: Literal["full", "tied", "diag", "spherical"] = "full",
+    sample_weight=None,
     **kwargs,
 ) -> list[GaussianMixture]:
     """Fit one 2-D GMM per adjacent pair (V_n, V_{n-1}) -- the model the recursion uses.
@@ -618,10 +642,28 @@ def fit_pairwise_gmms(
     below and bias the conditional in the low-V_n region where v_n^* sits. The conditional
     is unidentified below the incumbent threshold (no overlap), so a saturated threshold on
     a truncated sample is a bound, not a point -- check it with `diagnose_saturation`.
+
+    `sample_weight` (length n_rows) re-weights rows toward a target population, e.g.
+    inverse-selection-probability weighting back to the true joint. sklearn's GaussianMixture
+    has no native `sample_weight`, so this is applied by weight-proportional resampling (draw
+    n_obs observed rows with replacement, probability proportional to weight, using
+    `random_state`) before each pair's fit. Two caveats: it injects resampling noise (raise the
+    sample size or fix the seed for stability), and it is *degenerate under deterministic
+    stops* -- a zero-weight / zero-overlap region cannot be re-weighted into existence, so this
+    cannot recover the unidentified tail (use `identification="bounds"` for that).
     """
     data = np.asarray(data, dtype=float)
     N = data.shape[1] - 1
     n_rows = data.shape[0]
+    if sample_weight is not None:
+        sample_weight = np.asarray(sample_weight, dtype=float)
+        if sample_weight.shape != (n_rows,):
+            raise ValueError(
+                f"sample_weight must have shape ({n_rows},); got {sample_weight.shape}"
+            )
+        if np.any(sample_weight < 0):
+            raise ValueError("sample_weight must be nonnegative")
+    rng = np.random.default_rng(random_state)
     pairs = []
     for n in range(1, N + 1):
         cols = [N - n, N - n + 1]  # (V_n, V_{n-1}) in README column order
@@ -642,13 +684,21 @@ def fit_pairwise_gmms(
                 "`diagnose_saturation`.",
                 stacklevel=2,
             )
+        sub_obs = sub[obs]
+        cond_lo = float(sub_obs[:, 0].min())  # identified edge, from observed rows (pre-resample)
+        if sample_weight is not None:
+            w = sample_weight[obs]
+            total = w.sum()
+            if total <= 0:
+                raise ValueError(f"pair (V_{n}, V_{n - 1}): observed rows have zero total weight")
+            sub_obs = sub_obs[rng.choice(n_obs, size=n_obs, replace=True, p=w / total)]
         gmm = _as_full_covariance(
-            _fit_one_gmm(sub[obs], n_components, random_state, covariance_type, **kwargs)
+            _fit_one_gmm(sub_obs, n_components, random_state, covariance_type, **kwargs)
         )
         # Record the identified lower edge of V_n (the conditioning column): the smallest v_n
         # for which this pair was observed. Below it f_(n-1|n) is unidentified, which
         # `train_tarquin`'s bounds / clamp / flag paths read via `tarquin_support_lo_`.
-        gmm.tarquin_support_lo_ = float(sub[obs, 0].min())
+        gmm.tarquin_support_lo_ = cond_lo
         pairs.append(gmm)
     return pairs
 
@@ -1104,6 +1154,80 @@ def diagnose_saturation(v_star, tab, c) -> dict:
             f"{sat or 'none'}. See per-level cost_fraction."
         )
     return {"levels": levels, "cost_trivial": cost_trivial, "summary": summary}
+
+
+def diagnose_regime_overlap(data, regime, *, cols=None) -> dict:
+    """Per-regime observed support of each conditioning prophecy, to expose how pooling across
+    incumbent-threshold *regimes* widens the identified (overlap) region.
+
+    A long collection window mixes several incumbent threshold settings, so the realized sample
+    is non-stationary. That is partly a hazard (pooling conditionals that genuinely differ), but
+    also a lever: different incumbent thresholds reveal different slices of the low tail, so the
+    *union* across regimes reaches below any single regime's floor, shrinking the unidentified
+    dark region the bounds widen over. This reports, per conditioning column, each regime's
+    observed [min, max] and the pooled support, plus `floor_gain` -- how much lower the pooled
+    floor reaches than the most restrictive single regime (a large value means pooling
+    materially widens identification; ~0 means the regimes share a floor and pooling adds none).
+
+    Operates per adjacent pair (V_n, V_{n-1}), like the fit: the identification floor is the
+    smallest V_n for which the *pair* was observed (proceeded past step n, i.e. V_n above the
+    incumbent threshold), not the raw column min (V_n is seen even on draws that then stop). It
+    is reported per regime and keyed by the conditioning column index (N-n, the V_n slot).
+
+    Parameters
+    ----------
+    data : (n, D) array in README order (V_N, ..., V_0); ragged (NaN where un-acquired).
+    regime : length-n labels (any hashable, e.g. an incumbent-threshold tag or a time bucket).
+    cols : ignored placeholder for forward compatibility; the conditioning prophecies are used.
+
+    Returns dict keyed by conditioning column index (the V_n slot), each {"prophecy": "V_n",
+    "per_regime": {label: (lo, hi, n_obs)}, "pooled": (lo, hi), "floor_gain": float}, plus
+    "max_floor_gain" across pairs. `floor_gain` is how much lower the pooled floor reaches than
+    the most restrictive single regime.
+    """
+    data = np.asarray(data, dtype=float)
+    regime = np.asarray(regime)
+    if regime.shape[0] != data.shape[0]:
+        raise ValueError(f"regime length {regime.shape[0]} != n rows {data.shape[0]}")
+    del cols  # accepted for forward-compat; the pair structure dictates the columns
+    N = data.shape[1] - 1
+    labels = list(dict.fromkeys(regime.tolist()))  # stable unique order
+    out: dict = {}
+    gains = []
+    for n in range(1, N + 1):
+        cj, oj = N - n, N - n + 1  # V_n (conditioning) and V_{n-1} (outcome) columns
+        pair_obs = np.isfinite(data[:, cj]) & np.isfinite(data[:, oj])
+        vn = data[:, cj]
+        per_regime = {}
+        for r in labels:
+            sel = pair_obs & (regime == r)
+            if sel.any():
+                vals = vn[sel]
+                per_regime[r] = (float(vals.min()), float(vals.max()), int(sel.sum()))
+        pooled = ((float(vn[pair_obs].min()), float(vn[pair_obs].max()))
+                  if pair_obs.any() else None)
+        floors = [v[0] for v in per_regime.values()]
+        floor_gain = float(max(floors) - min(floors)) if len(floors) >= 2 else 0.0
+        gains.append(floor_gain)
+        out[int(cj)] = {"prophecy": f"V_{n}", "per_regime": per_regime,
+                        "pooled": pooled, "floor_gain": floor_gain}
+    out["max_floor_gain"] = max(gains, default=0.0)
+    return out
+
+
+def observed_support(data) -> list:
+    """Per-column observed [min, max] in README order (V_N, ..., V_0), for use as
+    `train_tarquin`'s `grid_bounds`. NaN entries are ignored; a column with no finite value
+    yields None (that level then falls back to the GMM-derived span). Compute it on
+    *uncensored* data to capture the true support, notably V_N's (it is seen on every draw),
+    so the grid is not clipped to a survivor fit's narrowed range.
+    """
+    data = np.asarray(data, dtype=float)
+    out = []
+    for j in range(data.shape[1]):
+        finite = data[:, j][np.isfinite(data[:, j])]
+        out.append((float(finite.min()), float(finite.max())) if finite.size else None)
+    return out
 
 
 def simulate_incumbent_truncation(data, thresholds) -> np.ndarray:
