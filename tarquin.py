@@ -236,8 +236,8 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
     conditionals. A fitted GMM does not enforce FOSD, so a violation signals that
     the modeled conditionals break the assumption -- in which case the endorsement
     set need not be an interval and the single-threshold rule is unreliable.
-    `mode` is one of "check" (warn), "raise", "project" (isotonic-project onto the
-    monotone cone and warn), or "off".
+    `mode` is one of "project" (default: isotonic-project onto the monotone cone,
+    silently), "check" (warn and return), "raise" (error), or "off" (skip the check).
     """
     if mode == "off":
         return p
@@ -245,6 +245,13 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
     worst = float(diffs.min()) if diffs.size else 0.0
     if worst >= -tol:
         return p  # nondecreasing up to numerical noise
+    if mode == "project":
+        # The default and intended estimator: Prop. 3 says the true p_n^T is monotone, so
+        # project onto the monotone cone and return *silently*. Finite-sample GMM wiggle
+        # trips this on essentially every real fit; warning each time would only train the
+        # caller to ignore it. Callers who want to be alerted use mode="check", and the
+        # data-level FOSD verdict belongs to `diagnose_fosd` / `diagnose_sufficiency`.
+        return np.asarray(isotonic_regression(p))
     n_viol = int((diffs < -tol).sum())
     rel = -worst / max(1.0, float(np.ptp(p)))  # worst dip as a fraction of the value range
     # NB: the *magnitude* of this dip does NOT reliably indicate a true FOSD violation.
@@ -261,13 +268,11 @@ def _enforce_monotone(p: np.ndarray, level: int, mode: str, tol: float) -> np.nd
         "not enforce FOSD, so finite-sample wiggle alone can cause this. This dip's size "
         "is not itself evidence of a true FOSD violation -- run `diagnose_fosd` on the "
         "data for that. If FOSD genuinely fails, S_n need not be an interval and the "
-        "single-threshold rule is unreliable even after projection."
+        "single-threshold rule is unreliable even after projection. (mode='project', the "
+        "default, corrects this silently.)"
     )
     if mode == "raise":
         raise ValueError(msg)
-    if mode == "project":
-        warnings.warn(msg + " Projecting onto the monotone cone (isotonic).", stacklevel=3)
-        return isotonic_regression(p)
     warnings.warn(msg, stacklevel=3)  # mode == "check"
     return p
 
@@ -335,6 +340,15 @@ def _level_integral(pair: GaussianMixture, g_n: np.ndarray, g_prev: np.ndarray,
     half-weighted), renormalized by the conditional mass actually captured on the grid so a
     component whose conditional mean is pushed toward a grid edge is not under-integrated.
     Returns the integral (before subtracting cost). Shared by the point and bounds paths.
+
+    Caveat on the renormalization: dividing by the on-grid mass is exact only if the
+    off-grid tail of the component carries the same (p_prev)^+ average as the captured bulk.
+    In the grid interior every component is covered to ~1 (default +-10 sigma, off-grid mass
+    ~1e-23), so this is a no-op. It bites only at extreme v_n, where a strongly-correlated
+    component's conditional mean is pushed past a grid edge and only one tail is seen; there
+    p_n^T is biased. That never affects the threshold, which is read at the bulk sign change
+    of a monotone p_n^T, far from those edges -- but it is an approximation, not exact
+    quadrature, and a value read at the very edge of the grid should be treated accordingly.
     """
     weights, means, sigmas = _conditional_params(pair, g_n)  # (G,K),(G,K),(K,)
     tw = _trapz_weights(g_prev.size)
@@ -410,10 +424,14 @@ def train_tarquin(
         GMM wiggle breaks monotonicity of the estimated p_n^T, so a violation is
         common in practice and means the bare single-threshold rule may be invalid.
         "project" (default) isotonic-projects p_n^T onto the monotone cone -- the
-        right estimator since Prop. 3 says the true p_n^T is monotone -- and warns
-        when it acts; "check" warns only; "raise" errors; "off" disables the check.
-        All four agree on the exact single-component Gaussian case (already monotone,
-        so projection is a no-op there).
+        right estimator since Prop. 3 says the true p_n^T is monotone -- and acts
+        *silently* (the wiggle trips it on nearly every real fit, so a warning each
+        time would only be noise); use "check" to be warned instead. "check" warns and
+        returns; "raise" errors; "off" disables the check. All four agree on the exact
+        single-component Gaussian case (already monotone, so projection is a no-op).
+        Projection repairs finite-sample wiggle but cannot rescue a genuine FOSD
+        violation; on data you suspect may break FOSD, run `diagnose_fosd` rather than
+        relying on the default to flag it.
     identification : "point" (default) returns a single threshold vector; "bounds" returns
         a (v_lo, v_hi) interval per threshold under the FOSD prior, honest about a region
         the sample does not identify (see `extrapolation` / `support_lo`).
@@ -611,7 +629,7 @@ def _fit_one_gmm(X, n_components, random_state, covariance_type, **kwargs):
 
 def fit_pairwise_gmms(
     data,
-    n_components: NComponents = 5,
+    n_components: NComponents = range(1, 6),
     random_state: int = 0,
     covariance_type: Literal["full", "tied", "diag", "spherical"] = "full",
     sample_weight=None,
@@ -626,9 +644,13 @@ def fit_pairwise_gmms(
     `train_tarquin`: pairs[0] = (V_1, V_0), ..., pairs[N-1] = (V_N, V_{N-1}).
 
     `n_components` may be an int or a sequence of candidate counts; a sequence selects
-    each pair's count independently by BIC. Pass extra sklearn `GaussianMixture` kwargs
-    (notably `n_init` for multiple EM restarts, `reg_covar` to regularize covariances)
-    via **kwargs to harden the fit against poor local optima / collapsed components.
+    each pair's count independently by BIC. The default `range(1, 6)` is a BIC sweep, not
+    a fixed count: a fixed, too-large count over-parameterizes the fit on modest samples
+    and injects spurious wiggle into p_n^T, so letting BIC pick per pair is the safer
+    default. Pass a scalar when fit cost matters (e.g. inside `bootstrap_thresholds`, which
+    refits per replicate). Pass extra sklearn `GaussianMixture` kwargs (notably `n_init`
+    for multiple EM restarts, `reg_covar` to regularize covariances) via **kwargs to harden
+    the fit against poor local optima / collapsed components.
 
     Any `covariance_type` is accepted: a non-"full" fit is densified to the (K, D, D)
     "full" layout the recursion indexes, so all four types feed `train_tarquin`.
@@ -637,11 +659,17 @@ def fit_pairwise_gmms(
     acquired -- the shape a sample collected under an incumbent threshold policy actually
     has (V_{n-1} is revealed only for draws that proceeded past step n). Each pair is then
     fit on the rows that reveal *both* its prophecies (proceeded past step n), NOT the
-    fully-revealed intersection. By sufficiency this is unbiased wherever V_n was revealed;
-    fitting the complete-case intersection instead would truncate the response V_{n-1} from
-    below and bias the conditional in the low-V_n region where v_n^* sits. The conditional
-    is unidentified below the incumbent threshold (no overlap), so a saturated threshold on
-    a truncated sample is a bound, not a point -- check it with `diagnose_saturation`.
+    fully-revealed intersection. By sufficiency the *target* conditional law f_(n-1|n) is
+    selection-invariant wherever V_n was revealed (conditioning on V_n removes the truncated
+    marginal), so this is consistent / asymptotically unbiased there *under correct
+    specification* -- whereas fitting the complete-case intersection truncates the response
+    V_{n-1} from below and biases the conditional in the low-V_n region where v_n^* sits. The
+    one caveat: an unconstrained GMM is misspecified for a V_n-truncated sample, so a finite
+    fit carries a small approximation bias that is largest near the identified edge a_n -- the
+    very place v_n^* often lands. The bias shrinks with sample size and components; treat a
+    threshold resolved right at a_n with care (use `identification="bounds"`). The conditional
+    is wholly unidentified below the incumbent threshold (no overlap), so a saturated threshold
+    on a truncated sample is a bound, not a point -- check it with `diagnose_saturation`.
 
     `sample_weight` (length n_rows) re-weights rows toward a target population, e.g.
     inverse-selection-probability weighting back to the true joint. sklearn's GaussianMixture
