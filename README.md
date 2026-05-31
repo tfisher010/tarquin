@@ -38,6 +38,10 @@ v_star, _ = tq.train_tarquin(pairs, c=np.array([35.0, 30.0]), t=float(np.percent
 r = tq.infer_tarquin(v_star, data[0])
 
 # Evaluate honestly: fit on train, score the policy on a holdout (not the fitting sample).
+# Note: evaluate_policy_mc needs *uncensored* draws (every column revealed), since the learned
+# policy proceeds below the incumbent threshold, into the region a truncated deployment sample
+# never observed. It is an in-distribution / synthetic check, not a substitute for an uncensored
+# experiment; see "Deployed and truncated samples".
 train, test = tq.holdout_split(data, test_frac=0.3)
 t = float(np.percentile(data[:, -1], 40))
 v_star, _ = tq.train_tarquin(tq.fit_pairwise_gmms(train), c=np.array([35.0, 30.0]), t=t)
@@ -365,7 +369,7 @@ plt.show()
 
 ### Algorithm 2 (inference)
 
-**Inputs:** Value-of-proceeding function $p^T$, value draw $v\in \mathbb{R}^{N+1}$.
+**Inputs:** Tarquinian values $v^\ast\in\mathbb{R}^{N+1}$ (the thresholds from Algorithm 1), value draw $v\in \mathbb{R}^{N+1}$.
 
 **Outputs:** Boolean decision vector $r\in \{0, 1\}^{N+1}$.
 
